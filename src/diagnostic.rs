@@ -1,23 +1,23 @@
-use crate::{Location, Resource};
+use crate::{Location, ModulePath};
 
 #[derive(Debug)]
 pub struct Diagnostic {
-    pub resource: Resource,
+    pub module_path: ModulePath,
     /// If the location is not specified, then the diagnostic refers to the entire file.
     pub location: Option<Location>,
 }
 
 impl Diagnostic {
-    pub fn in_file(resource: Resource) -> Self {
+    pub fn in_file(module_path: ModulePath) -> Self {
         Self {
-            resource,
+            module_path,
             location: None,
         }
     }
 
-    pub fn at(resource: Resource, location: Location) -> Self {
+    pub fn at(module_path: ModulePath, location: Location) -> Self {
         Self {
-            resource,
+            module_path,
             location: Some(location),
         }
     }
@@ -70,6 +70,7 @@ impl ErrorMessage {
 ///
 /// Upon exiting the program, all error messages will be scanned to check the most severe error level.
 /// If any errors exist, no warnings will be emitted.
+#[must_use = "errors must be processed by an ErrorEmitter"]
 pub struct DiagnosticResult<T> {
     /// If this is `None`, then the computation failed. Error messages will be contained inside `messages.
     /// If this is `Some`, then the computation succeeded, but there may still be some messages (e.g. warnings
@@ -152,30 +153,77 @@ impl<T> DiagnosticResult<T> {
             },
         }
     }
+}
 
-    /// Outputs all warning and error messages to the screen.
-    pub fn print_messages(self) {
+/// Prints error and warning messages.
+#[must_use = "error messages must be emitted using the emit_all method"]
+pub struct ErrorEmitter {
+    /// The error emitter caches warnings and will not output them until we have verified that there are no errors.
+    /// Order of emission of the error messages is preserved.
+    warnings: Vec<ErrorMessage>,
+
+    /// If this is true, warnings will not be cached or emitted.
+    has_emitted_error: bool,
+}
+
+impl Default for ErrorEmitter {
+    fn default() -> Self {
+        Self {
+            warnings: Vec::new(),
+            has_emitted_error: false,
+        }
+    }
+}
+
+impl ErrorEmitter {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Consumes the errors of a diagnostic result, yielding the encapsulated value.
+    pub fn consume_diagnostic<T>(&mut self, diagnostic_result: DiagnosticResult<T>) -> Option<T> {
+        let DiagnosticResult { value, messages } = diagnostic_result;
+        self.process(messages);
+        value
+    }
+
+    pub fn process(&mut self, messages: impl IntoIterator<Item=ErrorMessage>) {
+        for message in messages {
+            match message.severity {
+                Severity::Warning => {
+                    if !self.has_emitted_error {
+                        self.warnings.push(message);
+                    }
+                },
+                Severity::Error => {
+                    self.has_emitted_error = true;
+                    self.emit(message);
+                    self.warnings.clear();
+                },
+            }
+        }
+    }
+
+    fn emit(&self, message: ErrorMessage) {
         use console::style;
 
-        // Do we have any error messages, or only warnings?
-        let has_errors = self.messages.iter().any(|message| message.severity == Severity::Error);
+        match message.severity {
+            Severity::Error => println!("{}: {}", style("error").red().bright(), message.message),
+            Severity::Warning => println!("{}: {}", style("warning").yellow().bright(), message.message),
+        }
 
-        for message in self.messages {
-            if has_errors && message.severity == Severity::Warning {
-                continue;
-            }
+        if let Some(location) = message.diagnostic.location {
+            println!("{} {}:{}:{}", style("-->").cyan().bright(), message.diagnostic.module_path, location.line + 1, location.col + 1);
+        } else {
+            // Amount of spaces before the --> should depend on the amount of digits in the line number.
+            println!("{} {}", style("-->").cyan().bright(), message.diagnostic.module_path);
+        }
+    }
 
-            match message.severity {
-                Severity::Error => println!("{}: {}", style("error").red().bright(), message.message),
-                Severity::Warning => println!("{}: {}", style("warning").yellow().bright(), message.message),
-            }
-
-            if let Some(location) = message.diagnostic.location {
-                println!("{} {}:{}:{}", style("-->").cyan().bright(), message.diagnostic.resource.file_path, location.line + 1, location.col + 1);
-            } else {
-                // Amount of spaces before the --> should depend on the amount of digits in the line number.
-                println!("{} {}", style("-->").cyan().bright(), message.diagnostic.resource.file_path);
-            }
+    pub fn emit_all(mut self) {
+        let warnings = std::mem::take(&mut self.warnings);
+        for message in warnings {
+            self.emit(message);
         }
     }
 }

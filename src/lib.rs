@@ -1,6 +1,7 @@
+pub mod parser;
+
 mod diagnostic;
 pub use diagnostic::*;
 
-mod resource;
-pub use resource::*;
-
+mod module;
+pub use module::*;
