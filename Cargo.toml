@@ -1,0 +1,12 @@
+[package]
+name = "shoumei"
+version = "0.1.0"
+authors = ["thirdsgames <thirdsgames2018@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "^2.33", features = ["yaml"] }
+console = "^0.13"
+indicatif = "^0.15"
