@@ -112,28 +112,26 @@ impl<T> DiagnosticResult<T> {
     }
 
     /// Apply an infallible operation to the value inside this result. If the operation could fail, use [`DiagnosticResult::bind`] instead.
-    pub fn map<F, U>(self, f: F) -> DiagnosticResult<U> where
+    pub fn map<F, U>(self, f: F) -> DiagnosticResult<U>
+    where
         F: FnOnce(T) -> U,
     {
         match self.value {
-            Some(value) => {
-                DiagnosticResult {
-                    value: Some(f(value)),
-                    messages: self.messages,
-                }
-            }
-            None => {
-                DiagnosticResult {
-                    value: None,
-                    messages: self.messages,
-                }
-            }
+            Some(value) => DiagnosticResult {
+                value: Some(f(value)),
+                messages: self.messages,
+            },
+            None => DiagnosticResult {
+                value: None,
+                messages: self.messages,
+            },
         }
     }
 
     /// A monadic bind operation that consumes this diagnostic result and uses the value it contains, if it exists,
     /// to produce a new diagnostic result.
-    pub fn bind<F, U>(mut self, f: F) -> DiagnosticResult<U> where
+    pub fn bind<F, U>(mut self, f: F) -> DiagnosticResult<U>
+    where
         F: FnOnce(T) -> DiagnosticResult<U>,
     {
         match self.value {
@@ -144,12 +142,10 @@ impl<T> DiagnosticResult<T> {
                     value: result.value,
                     messages: self.messages,
                 }
-            },
-            None => {
-                DiagnosticResult {
-                    value: None,
-                    messages: self.messages,
-                }
+            }
+            None => DiagnosticResult {
+                value: None,
+                messages: self.messages,
             },
         }
     }
@@ -187,19 +183,19 @@ impl ErrorEmitter {
         value
     }
 
-    pub fn process(&mut self, messages: impl IntoIterator<Item=ErrorMessage>) {
+    pub fn process(&mut self, messages: impl IntoIterator<Item = ErrorMessage>) {
         for message in messages {
             match message.severity {
                 Severity::Warning => {
                     if !self.has_emitted_error {
                         self.warnings.push(message);
                     }
-                },
+                }
                 Severity::Error => {
                     self.has_emitted_error = true;
                     self.emit(message);
                     self.warnings.clear();
-                },
+                }
             }
         }
     }
@@ -209,14 +205,28 @@ impl ErrorEmitter {
 
         match message.severity {
             Severity::Error => println!("{}: {}", style("error").red().bright(), message.message),
-            Severity::Warning => println!("{}: {}", style("warning").yellow().bright(), message.message),
+            Severity::Warning => println!(
+                "{}: {}",
+                style("warning").yellow().bright(),
+                message.message
+            ),
         }
 
         if let Some(location) = message.diagnostic.location {
-            println!("{} {}:{}:{}", style("-->").cyan().bright(), message.diagnostic.module_path, location.line + 1, location.col + 1);
+            println!(
+                "{} {}:{}:{}",
+                style("-->").cyan().bright(),
+                message.diagnostic.module_path,
+                location.line + 1,
+                location.col + 1
+            );
         } else {
             // Amount of spaces before the --> should depend on the amount of digits in the line number.
-            println!("{} {}", style("-->").cyan().bright(), message.diagnostic.module_path);
+            println!(
+                "{} {}",
+                style("-->").cyan().bright(),
+                message.diagnostic.module_path
+            );
         }
     }
 
