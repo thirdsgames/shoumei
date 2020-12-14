@@ -36,7 +36,7 @@ impl Display for ModulePath {
 #[derive(Debug, Clone)]
 pub struct Module {}
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Location {
     /// A 0-indexed line number.
     pub line: u32,
@@ -47,6 +47,26 @@ pub struct Location {
 impl Location {
     pub fn new(line: u32, col: u32) -> Self {
         Self { line, col }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Range {
+    /// The start of this range of characters, inclusive.
+    pub start: Location,
+    /// The end of this range of characters, exclusive.
+    pub end: Location,
+}
+
+impl From<Location> for Range {
+    fn from(location: Location) -> Self {
+        Self {
+            start: location,
+            end: Location {
+                line: location.line,
+                col: location.col + 1,
+            },
+        }
     }
 }
 
@@ -82,6 +102,9 @@ impl ModuleLoader {
         }
         self.currently_loading.insert(module_path.clone());
 
+        // This chain of `bind`s is very similar to monadic `do` notation in Haskell.
+        // file <- ...
+        // lines <- ...
         let file = match File::open(PathBuf::from(&module_path)) {
             Ok(file) => file.into(),
             Err(_) => {
@@ -113,7 +136,8 @@ impl ModuleLoader {
             DiagnosticResult::ok(lines)
         });
 
-        let module = lines.bind(|_| DiagnosticResult::ok(Module {}));
+        let tokens = lines.bind(|lines| crate::parser::lexer::lex(&module_path, lines));
+        let module = tokens.bind(|_| DiagnosticResult::ok(Module {}));
 
         let module = self.error_emitter.consume_diagnostic(module);
 

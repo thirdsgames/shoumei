@@ -1,24 +1,39 @@
-use crate::{Location, ModulePath};
+use std::{
+    convert::TryInto,
+    fs::File,
+    io::{BufRead, BufReader},
+    iter::FromIterator,
+    path::PathBuf,
+};
+
+use crate::{Location, ModulePath, Range};
 
 #[derive(Debug)]
 pub struct Diagnostic {
     pub module_path: ModulePath,
     /// If the location is not specified, then the diagnostic refers to the entire file.
-    pub location: Option<Location>,
+    pub range: Option<Range>,
 }
 
 impl Diagnostic {
     pub fn in_file(module_path: ModulePath) -> Self {
         Self {
             module_path,
-            location: None,
+            range: None,
         }
     }
 
-    pub fn at(module_path: ModulePath, location: Location) -> Self {
+    pub fn at_location(module_path: ModulePath, location: Location) -> Self {
         Self {
             module_path,
-            location: Some(location),
+            range: Some(location.into()),
+        }
+    }
+
+    pub fn at(module_path: ModulePath, range: Range) -> Self {
+        Self {
+            module_path,
+            range: Some(range),
         }
     }
 }
@@ -87,6 +102,7 @@ impl<T> From<T> for DiagnosticResult<T> {
 
 impl<T> DiagnosticResult<T> {
     /// The computation succeeded with no messages.
+    /// This is the monadic `return` operation.
     pub fn ok(value: T) -> Self {
         Self {
             value: Some(value),
@@ -99,6 +115,13 @@ impl<T> DiagnosticResult<T> {
         Self {
             value: Some(value),
             messages: vec![message],
+        }
+    }
+
+    pub fn ok_with_many(value: T, messages: Vec<ErrorMessage>) -> Self {
+        Self {
+            value: Some(value),
+            messages,
         }
     }
 
@@ -148,6 +171,38 @@ impl<T> DiagnosticResult<T> {
                 messages: self.messages,
             },
         }
+    }
+
+    /// Combines a list of diagnostic results into a single result by binding them all together.
+    pub fn sequence(
+        results: impl IntoIterator<Item = DiagnosticResult<T>>,
+    ) -> DiagnosticResult<Vec<T>> {
+        results
+            .into_iter()
+            .fold(DiagnosticResult::ok(Vec::new()), |acc, i| {
+                acc.bind(|mut list| {
+                    i.bind(|i| {
+                        list.push(i);
+                        DiagnosticResult::ok(list)
+                    })
+                })
+            })
+    }
+
+    /// Returns true if the computation succeeded.
+    pub fn succeeded(&self) -> bool {
+        self.value.is_some()
+    }
+
+    /// Returns true if the computation failed.
+    pub fn failed(&self) -> bool {
+        self.value.is_none()
+    }
+}
+
+impl<T> FromIterator<DiagnosticResult<T>> for DiagnosticResult<Vec<T>> {
+    fn from_iter<U: IntoIterator<Item = DiagnosticResult<T>>>(iter: U) -> Self {
+        DiagnosticResult::sequence(iter)
     }
 }
 
@@ -204,7 +259,7 @@ impl ErrorEmitter {
         use console::style;
 
         match message.severity {
-            Severity::Error => println!("{}: {}", style("error").red().bright(), message.message),
+            Severity::Error => println!("{}{} {}", style("error").red().bright(), style(":").white().bright(), style(message.message).white().bright()),
             Severity::Warning => println!(
                 "{}: {}",
                 style("warning").yellow().bright(),
@@ -212,16 +267,84 @@ impl ErrorEmitter {
             ),
         }
 
-        if let Some(location) = message.diagnostic.location {
+        if let Some(range) = message.diagnostic.range {
+            // We calculate the amount of digits in the line number.
+            let line_number_max_digits = range.start.line.max(range.end.line).to_string().len();
+
             println!(
-                "{} {}:{}:{}",
+                "{}{} {}:{}:{}",
+                " ".repeat(line_number_max_digits),
                 style("-->").cyan().bright(),
                 message.diagnostic.module_path,
-                location.line + 1,
-                location.col + 1
+                range.start.line + 1,
+                range.start.col + 1
             );
+
+            // There's no point keeping the file content in memory just in case we need to print out errors.
+            // So we'll re-open the offending file here.
+            match File::open(PathBuf::from(&message.diagnostic.module_path)) {
+                Ok(f) => {
+                    let br = BufReader::new(f);
+                    let mut lines = br.lines().skip(range.start.line.try_into().unwrap());
+
+                    // Print out each relevant line of code, starting and finishing with an empty line.
+                    // Empty line.
+                    println!(
+                        "{: >2$} {}",
+                        "",
+                        style("|").cyan().bright(),
+                        line_number_max_digits,
+                    );
+
+                    // Relevant lines.
+                    for line in range.start.line..=range.end.line {
+                        let (line_data, line_length) = match lines.next() {
+                            Some(Ok(line)) => {
+                                let line_length = line.chars().count();
+                                (style(line), line_length)
+                            }
+                            Some(Err(_)) => {
+                                (style("could not decode line".to_string()).red().bright(), 0)
+                            }
+                            None => (style("could not read line".to_string()).red().bright(), 0),
+                        };
+
+                        println!(
+                            "{: >3$} {} {}",
+                            style((line + 1).to_string()).cyan().bright(),
+                            style("|").cyan().bright(),
+                            line_data,
+                            line_number_max_digits,
+                        );
+
+                        // Signal where on the line the error occured.
+                        if range.start.line == range.end.line {
+                            // The error was on a single line. We'll just underline where the error occured.
+                            println!(
+                                "{: >4$} {} {: >5$}{}",
+                                "",
+                                style("|").cyan().bright(),
+                                "",
+                                style("^".repeat(range.end.col as usize - range.start.col as usize)).yellow().bright(),
+                                line_number_max_digits,
+                                range.start.col as usize,
+                            );
+                        }
+                    }
+
+                    // Empty line.
+                    println!(
+                        "{: >2$} {}",
+                        "",
+                        style("|").cyan().bright(),
+                        line_number_max_digits,
+                    );
+                }
+                Err(_) => {
+                    println!("{}", style("could not open file").red().bright());
+                }
+            }
         } else {
-            // Amount of spaces before the --> should depend on the amount of digits in the line number.
             println!(
                 "{} {}",
                 style("-->").cyan().bright(),
