@@ -77,6 +77,20 @@ impl ErrorMessage {
             help: Vec::new(),
         }
     }
+
+    pub fn new_with(
+        message: String,
+        severity: Severity,
+        diagnostic: Diagnostic,
+        help: HelpMessage,
+    ) -> Self {
+        Self {
+            message,
+            severity,
+            diagnostic,
+            help: vec![help],
+        }
+    }
 }
 
 /// Even if warnings or errors are emitted, we may still be able to continue parsing the code.
@@ -85,6 +99,7 @@ impl ErrorMessage {
 ///
 /// Upon exiting the program, all error messages will be scanned to check the most severe error level.
 /// If any errors exist, no warnings will be emitted.
+#[derive(Debug)]
 #[must_use = "errors must be processed by an ErrorEmitter"]
 pub struct DiagnosticResult<T> {
     /// If this is `None`, then the computation failed. Error messages will be contained inside `messages.
@@ -259,7 +274,12 @@ impl ErrorEmitter {
         use console::style;
 
         match message.severity {
-            Severity::Error => println!("{}{} {}", style("error").red().bright(), style(":").white().bright(), style(message.message).white().bright()),
+            Severity::Error => println!(
+                "{}{} {}",
+                style("error").red().bright(),
+                style(":").white().bright(),
+                style(message.message).white().bright()
+            ),
             Severity::Warning => println!(
                 "{}: {}",
                 style("warning").yellow().bright(),
@@ -309,6 +329,25 @@ impl ErrorEmitter {
                             None => (style("could not read line".to_string()).red().bright(), 0),
                         };
 
+                        // Signal where on the line the error occured if we're on the first line.
+                        if line == range.start.line {
+                            // If the error was on a single line, we'll just underline where the error occured.
+                            // We don't need an overline.
+                            if range.start.line != range.end.line {
+                                println!(
+                                    "{: >4$} {} {: >5$}{}",
+                                    "",
+                                    style("|").cyan().bright(),
+                                    "",
+                                    style("v".repeat(line_length - range.start.col as usize))
+                                        .yellow()
+                                        .bright(),
+                                    line_number_max_digits,
+                                    range.start.col as usize,
+                                );
+                            }
+                        }
+
                         println!(
                             "{: >3$} {} {}",
                             style((line + 1).to_string()).cyan().bright(),
@@ -317,18 +356,35 @@ impl ErrorEmitter {
                             line_number_max_digits,
                         );
 
-                        // Signal where on the line the error occured.
-                        if range.start.line == range.end.line {
-                            // The error was on a single line. We'll just underline where the error occured.
-                            println!(
-                                "{: >4$} {} {: >5$}{}",
-                                "",
-                                style("|").cyan().bright(),
-                                "",
-                                style("^".repeat(range.end.col as usize - range.start.col as usize)).yellow().bright(),
-                                line_number_max_digits,
-                                range.start.col as usize,
-                            );
+                        // Signal where on the line the error occured if we're on the last line.
+                        if line == range.end.line {
+                            if range.start.line == range.end.line {
+                                // The error was on a single line. We'll just underline where the error occured.
+                                println!(
+                                    "{: >4$} {} {: >5$}{}",
+                                    "",
+                                    style("|").cyan().bright(),
+                                    "",
+                                    style(
+                                        "^".repeat(
+                                            range.end.col as usize - range.start.col as usize
+                                        )
+                                    )
+                                    .yellow()
+                                    .bright(),
+                                    line_number_max_digits,
+                                    range.start.col as usize,
+                                );
+                            } else {
+                                // Underline from the start of the line to the end of the error.
+                                println!(
+                                    "{: >3$} {} {}",
+                                    "",
+                                    style("|").cyan().bright(),
+                                    style("^".repeat(range.end.col as usize)).yellow().bright(),
+                                    line_number_max_digits,
+                                );
+                            }
                         }
                     }
 

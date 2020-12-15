@@ -136,8 +136,12 @@ impl ModuleLoader {
             DiagnosticResult::ok(lines)
         });
 
-        let tokens = lines.bind(|lines| crate::parser::lexer::lex(&module_path, lines));
-        let module = tokens.bind(|_| DiagnosticResult::ok(Module {}));
+        let tokens = lines.bind(|lines| crate::interpreter::lex(&module_path, lines));
+        println!("{:#?}", tokens);
+        let token_tree =
+            tokens.bind(|tokens| crate::interpreter::process_indent(&module_path, tokens));
+        println!("{:#?}", token_tree);
+        let module = token_tree.bind(|_| DiagnosticResult::ok(Module {}));
 
         let module = self.error_emitter.consume_diagnostic(module);
 

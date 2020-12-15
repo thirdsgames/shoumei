@@ -1,39 +1,58 @@
-use std::{collections::binary_heap::Iter, iter::Peekable};
+use std::iter::Peekable;
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Location, ModulePath, Range, Severity};
 
+#[derive(Debug)]
 pub enum TokenType {
-    Semicolon,
+    Assign,
+    TypeOr,
+
     Data,
+
     Identifier(String),
 }
 
+#[derive(Debug)]
 pub struct Token {
-    token_type: TokenType,
-    range: Range,
+    pub token_type: TokenType,
+    pub range: Range,
 }
 
-pub fn lex(module_path: &ModulePath, lines: Vec<String>) -> DiagnosticResult<Vec<Token>> {
+#[derive(Debug, Clone)]
+pub struct LeadingWhitespace {
+    pub string: String,
+    pub range: Range,
+}
+
+pub fn lex(
+    module_path: &ModulePath,
+    lines: Vec<String>,
+) -> DiagnosticResult<Vec<(LeadingWhitespace, Vec<Token>)>> {
     lines
         .into_iter()
         .enumerate()
         .map(|(line_number, line)| lex_line(module_path, line_number as u32, line))
-        .collect::<DiagnosticResult<Vec<Vec<Token>>>>()
-        .map(|list| list.into_iter().flatten().collect())
+        .collect()
 }
 
+/// Returns the leading whitespace and then the list of tokens on this line.
 fn lex_line(
     module_path: &ModulePath,
     line_number: u32,
     line: String,
-) -> DiagnosticResult<Vec<Token>> {
+) -> DiagnosticResult<(LeadingWhitespace, Vec<Token>)> {
     let mut chars = line
         .chars()
         .enumerate()
         .map(|(i, c)| (i as u32, c))
         .peekable();
     let mut tokens = Vec::new();
-    consume_whitespace(&mut chars);
+
+    let leading_whitespace = {
+        let (string, range) = consume_whitespace(line_number, &mut chars);
+        LeadingWhitespace { string, range }
+    };
+
     while let Some(&(col, _)) = chars.peek() {
         let token = lex_token(module_path, line_number, &mut chars);
         let should_break = token.failed();
@@ -48,50 +67,61 @@ fn lex_line(
                 panic!("no characters were consumed by `lex_token`, but it returned a success, at col {} of line \"{}\"", col, line);
             }
         }
-        consume_whitespace(&mut chars);
+        consume_whitespace(line_number, &mut chars);
     }
-    DiagnosticResult::sequence(tokens)
+
+    DiagnosticResult::sequence(tokens).map(|list| (leading_whitespace, list))
 }
 
 /// This function parses a single token from the input stream.
 /// It must consume at least one character from `chars` if it did not return a `DiagnosticResult::fail`,
 /// otherwise we'll end up in an infinite loop.
+/// In order to parse correctly, tokens must be separated from each other, or they will be grouped into a single token.
+/// Therefore, symbolic tokens e.g. '+' are separated from alphanumeric tokens e.g. 'append' automatically.
+/// Putting two symbolic tokens next to each other requires spacing.
 fn lex_token(
     module_path: &ModulePath,
     line: u32,
     chars: &mut Peekable<impl Iterator<Item = (u32, char)>>,
 ) -> DiagnosticResult<Token> {
     let (col, ch) = *chars.peek().unwrap();
-    let start = Location { line, col };
-    let single_char_range = Range {
-        start,
-        end: Location { line, col: col + 1 },
-    };
 
-    match ch {
-        ';' => {
-            chars.next();
-            DiagnosticResult::ok(Token {
-                token_type: TokenType::Semicolon,
-                range: single_char_range,
-            })
-        }
-        _ => {
-            if ch.is_alphabetic() {
-                let (identifier, range) =
-                    consume_predicate_one(line, chars, |c| c.is_alphanumeric());
-                DiagnosticResult::ok(Token {
-                    token_type: TokenType::Identifier(identifier),
-                    range,
-                })
-            } else {
-                DiagnosticResult::fail(ErrorMessage::new(
-                    String::from("unexpected character"),
-                    Severity::Error,
-                    Diagnostic::at(module_path.clone(), start.into()),
-                ))
-            }
-        }
+    if ch.is_control() {
+        return DiagnosticResult::fail(ErrorMessage::new(
+            String::from("unexpected control character"),
+            Severity::Error,
+            Diagnostic::at_location(module_path.clone(), Location { line, col }),
+        ));
+    }
+
+    if ch.is_alphanumeric() {
+        let (identifier, range) = consume_predicate_one(line, chars, |c| c.is_alphanumeric());
+        let token_type = token_type_alphabetic(identifier);
+        DiagnosticResult::ok(Token { token_type, range })
+    } else {
+        let (identifier, range) =
+            consume_predicate_one(line, chars, |c| !c.is_alphanumeric() && !c.is_whitespace());
+        let token_type = token_type_symbol(identifier);
+        DiagnosticResult::ok(Token { token_type, range })
+    }
+}
+
+/// Given an identifier make of alphanumeric characters, determine the token type.
+/// If no specific in-built token type was deduced, the token is simply an `Identifier`.
+fn token_type_alphabetic(s: String) -> TokenType {
+    match s.as_str() {
+        "data" => TokenType::Data,
+        _ => TokenType::Identifier(s),
+    }
+}
+
+/// Given an identifier make of symbolic characters, determine the token type.
+/// If no specific in-built token type was deduced, the token is simply an `Identifier`.
+fn token_type_symbol(s: String) -> TokenType {
+    match s.as_str() {
+        "|" => TokenType::TypeOr,
+        "=" => TokenType::Assign,
+        _ => TokenType::Identifier(s),
     }
 }
 
@@ -143,9 +173,9 @@ where
     (s, range)
 }
 
-fn consume_whitespace<I>(chars: &mut Peekable<I>)
+fn consume_whitespace<I>(line: u32, chars: &mut Peekable<I>) -> (String, Range)
 where
     I: Iterator<Item = (u32, char)>,
 {
-    consume_predicate(0, chars, |c| c.is_whitespace());
+    consume_predicate(line, chars, |c| c.is_whitespace())
 }

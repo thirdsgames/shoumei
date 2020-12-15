@@ -1,4 +1,4 @@
-pub mod parser;
+pub mod interpreter;
 
 mod diagnostic;
 pub use diagnostic::*;
