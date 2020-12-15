@@ -6,8 +6,14 @@ use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Location, ModulePath, Ra
 pub enum TokenType {
     Assign,
     TypeOr,
+    Type,
+    Arrow,
+
+    LeftParenthesis,
+    RightParenthesis,
 
     Data,
+    Def,
 
     Identifier(String),
 }
@@ -94,15 +100,35 @@ fn lex_token(
         ));
     }
 
-    if ch.is_alphanumeric() {
-        let (identifier, range) = consume_predicate_one(line, chars, |c| c.is_alphanumeric());
-        let token_type = token_type_alphabetic(identifier);
-        DiagnosticResult::ok(Token { token_type, range })
-    } else {
-        let (identifier, range) =
-            consume_predicate_one(line, chars, |c| !c.is_alphanumeric() && !c.is_whitespace());
-        let token_type = token_type_symbol(identifier);
-        DiagnosticResult::ok(Token { token_type, range })
+    match ch {
+        '(' => {
+            chars.next();
+            DiagnosticResult::ok(Token {
+                token_type: TokenType::LeftParenthesis,
+                range: Location { line, col }.into(),
+            })
+        }
+        ')' => {
+            chars.next();
+            DiagnosticResult::ok(Token {
+                token_type: TokenType::RightParenthesis,
+                range: Location { line, col }.into(),
+            })
+        }
+        _ => {
+            if ch.is_alphanumeric() {
+                let (identifier, range) =
+                    consume_predicate_one(line, chars, |c| c.is_alphanumeric());
+                let token_type = token_type_alphabetic(identifier);
+                DiagnosticResult::ok(Token { token_type, range })
+            } else {
+                let (identifier, range) = consume_predicate_one(line, chars, |c| {
+                    !c.is_alphanumeric() && !c.is_whitespace() && !vec!['(', ')'].contains(&c)
+                });
+                let token_type = token_type_symbol(identifier);
+                DiagnosticResult::ok(Token { token_type, range })
+            }
+        }
     }
 }
 
@@ -111,6 +137,7 @@ fn lex_token(
 fn token_type_alphabetic(s: String) -> TokenType {
     match s.as_str() {
         "data" => TokenType::Data,
+        "def" => TokenType::Def,
         _ => TokenType::Identifier(s),
     }
 }
@@ -121,6 +148,8 @@ fn token_type_symbol(s: String) -> TokenType {
     match s.as_str() {
         "|" => TokenType::TypeOr,
         "=" => TokenType::Assign,
+        "::" => TokenType::Type,
+        "->" => TokenType::Arrow,
         _ => TokenType::Identifier(s),
     }
 }

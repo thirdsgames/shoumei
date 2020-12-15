@@ -137,9 +137,10 @@ impl ModuleLoader {
         });
 
         let tokens = lines.bind(|lines| crate::interpreter::lex(&module_path, lines));
-        println!("{:#?}", tokens);
         let token_tree =
             tokens.bind(|tokens| crate::interpreter::process_indent(&module_path, tokens));
+        let token_tree = token_tree
+            .bind(|token_tree| crate::interpreter::process_brackets(&module_path, token_tree));
         println!("{:#?}", token_tree);
         let module = token_tree.bind(|_| DiagnosticResult::ok(Module {}));
 

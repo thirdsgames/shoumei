@@ -1,5 +1,5 @@
 data Bool = True | False
 
-def && infixr 3 :: Bool -> Bool -> Bool
-    True && True = True
-    _ && _ = False
+def and :: Bool -> Bool -> Bool
+    and (True ((True) = True
+    and _ _ = False

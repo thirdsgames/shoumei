@@ -286,8 +286,29 @@ impl ErrorEmitter {
                 message.message
             ),
         }
+        self.print_message(message.diagnostic);
 
-        if let Some(range) = message.diagnostic.range {
+        for help in message.help {
+            match help.help_type {
+                HelpType::Help => println!(
+                    "{} {}",
+                    style("help:").white().bright(),
+                    style(help.message).white().bright()
+                ),
+                HelpType::Note => println!(
+                    "{} {}",
+                    style("note:").white().bright(),
+                    style(help.message).white().bright()
+                ),
+            }
+            self.print_message(help.diagnostic);
+        }
+    }
+
+    fn print_message(&self, diagnostic: Diagnostic) {
+        use console::style;
+
+        if let Some(range) = diagnostic.range {
             // We calculate the amount of digits in the line number.
             let line_number_max_digits = range.start.line.max(range.end.line).to_string().len();
 
@@ -295,14 +316,14 @@ impl ErrorEmitter {
                 "{}{} {}:{}:{}",
                 " ".repeat(line_number_max_digits),
                 style("-->").cyan().bright(),
-                message.diagnostic.module_path,
+                diagnostic.module_path,
                 range.start.line + 1,
                 range.start.col + 1
             );
 
             // There's no point keeping the file content in memory just in case we need to print out errors.
             // So we'll re-open the offending file here.
-            match File::open(PathBuf::from(&message.diagnostic.module_path)) {
+            match File::open(PathBuf::from(&diagnostic.module_path)) {
                 Ok(f) => {
                     let br = BufReader::new(f);
                     let mut lines = br.lines().skip(range.start.line.try_into().unwrap());
@@ -404,7 +425,7 @@ impl ErrorEmitter {
             println!(
                 "{} {}",
                 style("-->").cyan().bright(),
-                message.diagnostic.module_path
+                diagnostic.module_path
             );
         }
     }

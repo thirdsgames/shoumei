@@ -1,19 +1,27 @@
-use crate::{
-    Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, Location, ModulePath, Range, Severity,
-};
+use crate::{Diagnostic, DiagnosticResult, ErrorMessage, ModulePath, Severity};
 
 use super::{LeadingWhitespace, Token};
 
-/// A token tree represents the overall structure of the program.
-/// Any program is divisible into such blocks. Indented blocks and bracketed blocks
-/// create sub-trees.
+/// A token block represents an indented block of content, or indeed the whole file.
+#[derive(Debug, Default)]
+pub struct TokenBlock {
+    pub lines: Vec<TokenLine>,
+}
+
+/// A block may contain multiple `TokenLine`s.
+/// These lines may be single lines or entire sub-blocks contained within the parent block.
+#[derive(Debug)]
+pub enum TokenLine {
+    Block(TokenBlock),
+    Line(Vec<TokenTree>),
+}
+
+/// A line is subdivided into token trees, which are essentially bracketed groups.
+/// For example, in the expression `1 + (2 + 3) + 4`, the token trees are `[1, +, [2, +, 3], +, 4]`.
 #[derive(Debug)]
 pub enum TokenTree {
     Token(Token),
-    /// Represents an indented block (or indeed, the whole program).
-    Block(Vec<TokenTree>),
-    /// Represents a parenthesised block.
-    Bracket(Vec<TokenTree>),
+    Tree(Vec<TokenTree>),
 }
 
 #[derive(Debug, Clone)]
@@ -32,7 +40,7 @@ impl IndentLevel {
 pub fn process_indent(
     module_path: &ModulePath,
     tokens: Vec<(LeadingWhitespace, Vec<Token>)>,
-) -> DiagnosticResult<Vec<TokenTree>> {
+) -> DiagnosticResult<TokenBlock> {
     match tokens.first() {
         Some((whitespace, _)) => {
             if whitespace.string != *"" {
@@ -45,16 +53,16 @@ pub fn process_indent(
         }
         None => {
             // File was empty.
-            return DiagnosticResult::ok(Vec::new());
+            return DiagnosticResult::ok(TokenBlock::default());
         }
     }
 
     // A list of all indent levels and blocks, e.g. [(0, _), (4, _), (8, _), (12, _)]
     // if we're in a space-indented file inside three nested blocks, along with the entire file as the first block.
-    let mut blocks: Vec<(u32, Vec<TokenTree>)> = Vec::new();
+    let mut blocks: Vec<(u32, TokenBlock)> = Vec::new();
     // A block to represent the whole file.
-    blocks.push((0, Vec::new()));
-    for (indent, mut line) in tokens {
+    blocks.push((0, TokenBlock::default()));
+    for (indent, line) in tokens {
         if line.is_empty() {
             continue;
         }
@@ -90,7 +98,7 @@ pub fn process_indent(
                     match blocks.last_mut() {
                         Some((_, parent_block)) => {
                             // We'll place this completed block inside the parent block.
-                            parent_block.push(TokenTree::Block(block));
+                            parent_block.lines.push(TokenLine::Block(block));
                         }
                         None => {
                             // There must always be a parent block!
@@ -99,7 +107,9 @@ pub fn process_indent(
                     }
                 }
                 std::cmp::Ordering::Equal => {
-                    block.extend(line.drain(..).map(TokenTree::Token));
+                    block.lines.push(TokenLine::Line(
+                        line.into_iter().map(TokenTree::Token).collect(),
+                    ));
                     break;
                 }
                 std::cmp::Ordering::Greater => {
@@ -110,14 +120,16 @@ pub fn process_indent(
                         return DiagnosticResult::fail(ErrorMessage::new(
                             String::from("indented by the wrong amount"),
                             Severity::Error,
-                            Diagnostic::at(module_path.clone(), indent_level.indent.range)
+                            Diagnostic::at(module_path.clone(), indent_level.indent.range),
                         ));
                     }
                     blocks.push((
                         indent_level.amount,
-                        line.drain(..)
-                            .map(TokenTree::Token)
-                            .collect(),
+                        TokenBlock {
+                            lines: vec![TokenLine::Line(
+                                line.into_iter().map(TokenTree::Token).collect(),
+                            )],
+                        },
                     ));
                     break;
                 }
@@ -129,7 +141,7 @@ pub fn process_indent(
     while blocks.len() > 1 {
         let (_, block) = blocks.pop().unwrap();
         let (_, parent_block) = blocks.last_mut().unwrap();
-        parent_block.push(TokenTree::Block(block));
+        parent_block.lines.push(TokenLine::Block(block));
     }
 
     let (_, file) = blocks.pop().unwrap();
