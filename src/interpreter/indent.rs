@@ -1,4 +1,4 @@
-use crate::{Diagnostic, DiagnosticResult, ErrorMessage, ModulePath, Severity};
+use crate::{Diagnostic, DiagnosticResult, ErrorMessage, ModulePath, Range, Severity};
 
 use super::{LeadingWhitespace, Token};
 
@@ -6,6 +6,19 @@ use super::{LeadingWhitespace, Token};
 #[derive(Debug, Default)]
 pub struct TokenBlock {
     pub lines: Vec<TokenLine>,
+}
+
+impl TokenBlock {
+    pub fn range(&self) -> Range {
+        // It is a logic error to have a token block with zero lines.
+        // Also it is a logic error to have a token line with zero trees.
+        // Therefore, it is perfectly sound to unwrap the first/last line/tree etc in the `range` methods.
+        self.lines
+            .first()
+            .unwrap()
+            .range()
+            .union(self.lines.last().unwrap().range())
+    }
 }
 
 /// A block may contain multiple `TokenLine`s.
@@ -16,12 +29,50 @@ pub enum TokenLine {
     Line(Vec<TokenTree>),
 }
 
+impl TokenLine {
+    pub fn range(&self) -> Range {
+        match self {
+            TokenLine::Block(block) => block.range(),
+            TokenLine::Line(line) => line
+                .first()
+                .unwrap()
+                .range()
+                .union(line.last().unwrap().range()),
+        }
+    }
+}
+
 /// A line is subdivided into token trees, which are essentially bracketed groups.
 /// For example, in the expression `1 + (2 + 3) + 4`, the token trees are `[1, +, [2, +, 3], +, 4]`.
 #[derive(Debug)]
 pub enum TokenTree {
     Token(Token),
-    Tree(Vec<TokenTree>),
+    Tree {
+        /// The range representing the open bracket.
+        open: Range,
+        /// The range representing the close bracket.
+        close: Range,
+        /// The actual tokens inside this tree node.
+        tokens: Vec<TokenTree>,
+        /// What kind of brackets does this token tree represent?
+        bracket_type: BracketType,
+    },
+}
+
+#[derive(Debug)]
+pub enum BracketType {
+    Parentheses,
+    Square,
+    Brace,
+}
+
+impl TokenTree {
+    pub fn range(&self) -> Range {
+        match self {
+            TokenTree::Token(token) => token.range,
+            TokenTree::Tree { open, close, .. } => open.union(*close),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

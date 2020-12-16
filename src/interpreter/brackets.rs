@@ -2,7 +2,7 @@ use crate::{
     Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, ModulePath, Range, Severity,
 };
 
-use super::{TokenBlock, TokenLine, TokenTree, TokenType};
+use super::{BracketType, TokenBlock, TokenLine, TokenTree, TokenType};
 
 /// Processes bracket pairs to remove explicit bracket characters in return for structural representation of operation order.
 /// This uses `TokenTree`s to represent the structure.
@@ -35,12 +35,12 @@ fn process_brackets_line(module_path: &ModulePath, line: TokenLine) -> Diagnosti
                     // The fake open bracket will start at the first token on the line, and will span for one character.
                     token.range.start.into()
                 }
-                TokenTree::Tree(_) => { panic!("unexpected token tree node, the indent step is not supposed to create token trees"); }
+                TokenTree::Tree { .. } => { panic!("unexpected token tree node, the indent step is not supposed to create token trees"); }
             }, Vec::new()));
 
             let end_of_line = match line.last().unwrap() {
                 TokenTree::Token(token) => token.range.end.into(),
-                TokenTree::Tree(_) => {
+                TokenTree::Tree { .. } => {
                     panic!("unexpected token tree node, the indent step is not supposed to create token trees");
                 }
             };
@@ -55,10 +55,15 @@ fn process_brackets_line(module_path: &ModulePath, line: TokenLine) -> Diagnosti
                             }
                             TokenType::RightParenthesis => {
                                 // Terminate the current bracket pair.
-                                let tree = brackets.pop().unwrap().1;
+                                let (open, tokens) = brackets.pop().unwrap();
                                 match brackets.last_mut() {
                                     Some((_, parent_bracket_tree)) => {
-                                        parent_bracket_tree.push(TokenTree::Tree(tree));
+                                        parent_bracket_tree.push(TokenTree::Tree {
+                                            open,
+                                            close: token.range,
+                                            tokens,
+                                            bracket_type: BracketType::Parentheses, // TODO validate that both brackets are parentheses
+                                        });
                                     }
                                     None => {
                                         return DiagnosticResult::fail(ErrorMessage::new(
@@ -75,7 +80,7 @@ fn process_brackets_line(module_path: &ModulePath, line: TokenLine) -> Diagnosti
                             }
                         }
                     }
-                    TokenTree::Tree(_) => {
+                    TokenTree::Tree { .. } => {
                         panic!("unexpected token tree node, the indent step is not supposed to create token trees");
                     }
                 }

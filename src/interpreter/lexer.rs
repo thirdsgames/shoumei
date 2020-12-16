@@ -2,7 +2,7 @@ use std::iter::Peekable;
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Location, ModulePath, Range, Severity};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum TokenType {
     Assign,
     TypeOr,
@@ -148,7 +148,7 @@ fn token_type_symbol(s: String) -> TokenType {
     match s.as_str() {
         "|" => TokenType::TypeOr,
         "=" => TokenType::Assign,
-        "::" => TokenType::Type,
+        ":" => TokenType::Type,
         "->" => TokenType::Arrow,
         _ => TokenType::Identifier(s),
     }

@@ -3,38 +3,11 @@ use std::{
     fmt::Display,
     fs::File,
     io::{BufRead, BufReader},
+    ops::{Deref, DerefMut},
     path::PathBuf,
 };
 
-use crate::{Diagnostic, DiagnosticResult, ErrorEmitter, ErrorMessage, Severity};
-
-/// A list of path segments. These cannot contain forward or backward slashes, or colons.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ModulePath(pub Vec<String>);
-
-impl<'a> From<&'a ModulePath> for PathBuf {
-    fn from(path: &'a ModulePath) -> Self {
-        path.0.iter().collect()
-    }
-}
-
-impl Display for ModulePath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (i, item) in self.0.iter().enumerate() {
-            if i != 0 {
-                write!(f, "/")?;
-            }
-            write!(f, "{}", item)?;
-        }
-        Ok(())
-    }
-}
-
-/// A single `.shoumei` file is called a module. It may export theorems, proofs, definitions, etc.
-/// This `Module` struct contains the parsed abstract syntax tree of a module.
-/// Module inclusions must be hierarchical and non-circular. This prevents circular proofs.
-#[derive(Debug, Clone)]
-pub struct Module {}
+use crate::{Diagnostic, DiagnosticResult, ErrorEmitter, ErrorMessage, Severity, interpreter::{Token, TypeConstructor}};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Location {
@@ -68,6 +41,103 @@ impl From<Location> for Range {
             },
         }
     }
+}
+
+impl Range {
+    pub fn union(self, other: Range) -> Range {
+        Range {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
+    }
+}
+
+/// A list of path segments. These cannot contain forward or backward slashes, or colons.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ModulePath(pub Vec<String>);
+
+impl<'a> From<&'a ModulePath> for PathBuf {
+    fn from(path: &'a ModulePath) -> Self {
+        path.0.iter().collect()
+    }
+}
+
+impl Display for ModulePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, item) in self.0.iter().enumerate() {
+            if i != 0 {
+                write!(f, "/")?;
+            }
+            write!(f, "{}", item)?;
+        }
+        Ok(())
+    }
+}
+
+/// A single `.shoumei` file is called a module. It may export theorems, proofs, definitions, etc.
+/// This `Module` struct contains the parsed abstract syntax tree of a module.
+/// Module inclusions must be hierarchical and non-circular. This prevents circular proofs.
+#[derive(Debug)]
+pub struct Module {
+    pub data: Vec<Data>,
+    pub definitions: Vec<Definition>,
+}
+
+/// An object associated with an area in code.
+/// Automatically derefs to the contained value.
+#[derive(Debug)]
+pub struct Ranged<T> {
+    value: T,
+    module_path: ModulePath,
+    range: Range,
+}
+
+impl<T> Deref for Ranged<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<T> DerefMut for Ranged<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl<T> Ranged<T> {
+    pub fn module_path(&self) -> &ModulePath {
+        &self.module_path
+    }
+
+    pub fn range(&self) -> &Range {
+        &self.range
+    }
+}
+
+#[derive(Debug)]
+pub enum Type {
+    /// An explicitly named type without type parameters, e.g. `Bool`.
+    Named(Ranged<String>),
+    /// A function `a -> b`.
+    /// Functions with more arguments, e.g. `a -> b -> c` are represented as
+    /// curried functions, e.g. `a -> (b -> c)`.
+    Function(Box<Type>, Box<Type>),
+}
+
+/// A `data` block, used to define sum or product types.
+#[derive(Debug)]
+pub struct Data {
+    pub name: Token,
+    pub type_ctors: Vec<TypeConstructor>,
+}
+
+/// A `def` block. Defines a symbol's type and what values it takes under what circumstances.
+#[derive(Debug)]
+pub struct Definition {
+    pub name: Token,
+    pub symbol_type: Type,
 }
 
 /// Loads resources from disk, lexing and parsing them.
@@ -137,12 +207,13 @@ impl ModuleLoader {
         });
 
         let tokens = lines.bind(|lines| crate::interpreter::lex(&module_path, lines));
-        let token_tree =
+        let token_block =
             tokens.bind(|tokens| crate::interpreter::process_indent(&module_path, tokens));
-        let token_tree = token_tree
-            .bind(|token_tree| crate::interpreter::process_brackets(&module_path, token_tree));
-        println!("{:#?}", token_tree);
-        let module = token_tree.bind(|_| DiagnosticResult::ok(Module {}));
+        let token_block = token_block
+            .bind(|token_block| crate::interpreter::process_brackets(&module_path, token_block));
+        let module =
+            token_block.bind(|token_block| crate::interpreter::parse(&module_path, token_block));
+        println!("{:#?}", module);
 
         let module = self.error_emitter.consume_diagnostic(module);
 

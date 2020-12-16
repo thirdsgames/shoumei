@@ -188,6 +188,15 @@ impl<T> DiagnosticResult<T> {
         }
     }
 
+    /// Converts a failed diagnostic into a successful diagnostic by wrapping
+    /// the contained value in an `Option`.
+    pub fn unfail(self) -> DiagnosticResult<Option<T>> {
+        DiagnosticResult {
+            value: Some(self.value),
+            messages: self.messages,
+        }
+    }
+
     /// Combines a list of diagnostic results into a single result by binding them all together.
     pub fn sequence(
         results: impl IntoIterator<Item = DiagnosticResult<T>>,
@@ -198,6 +207,26 @@ impl<T> DiagnosticResult<T> {
                 acc.bind(|mut list| {
                     i.bind(|i| {
                         list.push(i);
+                        DiagnosticResult::ok(list)
+                    })
+                })
+            })
+    }
+
+    /// Combines a list of diagnostic results into a single result by binding them all together.
+    /// Any failed diagnostics will be excluded from the output, but their error messages will remain.
+    /// Therefore, this function will never fail - it might just produce an empty list as its output.
+    pub fn sequence_unfail(
+        results: impl IntoIterator<Item = DiagnosticResult<T>>,
+    ) -> DiagnosticResult<Vec<T>> {
+        results
+            .into_iter()
+            .fold(DiagnosticResult::ok(Vec::new()), |acc, i| {
+                acc.bind(|mut list| {
+                    i.unfail().bind(|i| {
+                        if let Some(i) = i {
+                            list.push(i);
+                        }
                         DiagnosticResult::ok(list)
                     })
                 })
@@ -216,8 +245,10 @@ impl<T> DiagnosticResult<T> {
 }
 
 impl<T> FromIterator<DiagnosticResult<T>> for DiagnosticResult<Vec<T>> {
+    /// Any failed diagnostics will be excluded from the output, but their error messages will remain.
+    /// Therefore, this function will never fail - it might just produce an empty list as its output.
     fn from_iter<U: IntoIterator<Item = DiagnosticResult<T>>>(iter: U) -> Self {
-        DiagnosticResult::sequence(iter)
+        DiagnosticResult::sequence_unfail(iter)
     }
 }
 
