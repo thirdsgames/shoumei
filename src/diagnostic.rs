@@ -6,6 +6,8 @@ use std::{
     path::PathBuf,
 };
 
+use console::StyledObject;
+
 use crate::{Location, ModulePath, Range};
 
 #[derive(Debug)]
@@ -188,6 +190,12 @@ impl<T> DiagnosticResult<T> {
         }
     }
 
+    /// Appends a message to this diagnostic result, regardless of whether the result succeeded or failed.
+    pub fn with(mut self, message: ErrorMessage) -> Self {
+        self.messages.push(message);
+        self
+    }
+
     /// Converts a failed diagnostic into a successful diagnostic by wrapping
     /// the contained value in an `Option`.
     pub fn unfail(self) -> DiagnosticResult<Option<T>> {
@@ -305,19 +313,24 @@ impl ErrorEmitter {
         use console::style;
 
         match message.severity {
-            Severity::Error => println!(
-                "{}{} {}",
-                style("error").red().bright(),
-                style(":").white().bright(),
-                style(message.message).white().bright()
-            ),
-            Severity::Warning => println!(
-                "{}: {}",
-                style("warning").yellow().bright(),
-                message.message
-            ),
+            Severity::Error => {
+                println!(
+                    "{}{} {}",
+                    style("error").red().bright(),
+                    style(":").white().bright(),
+                    style(message.message).white().bright()
+                );
+                self.print_message(message.diagnostic, |s| style(s).red().bright());
+            }
+            Severity::Warning => {
+                println!(
+                    "{}: {}",
+                    style("warning").yellow().bright(),
+                    message.message
+                );
+                self.print_message(message.diagnostic, |s| style(s).yellow().bright());
+            }
         }
-        self.print_message(message.diagnostic);
 
         for help in message.help {
             match help.help_type {
@@ -332,11 +345,15 @@ impl ErrorEmitter {
                     style(help.message).white().bright()
                 ),
             }
-            self.print_message(help.diagnostic);
+            self.print_message(help.diagnostic, |s| style(s).white().bright());
         }
     }
 
-    fn print_message(&self, diagnostic: Diagnostic) {
+    fn print_message(
+        &self,
+        diagnostic: Diagnostic,
+        style_arrows: impl Fn(String) -> StyledObject<String>,
+    ) {
         use console::style;
 
         if let Some(range) = diagnostic.range {
@@ -391,9 +408,9 @@ impl ErrorEmitter {
                                     "",
                                     style("|").cyan().bright(),
                                     "",
-                                    style("v".repeat(line_length - range.start.col as usize))
-                                        .yellow()
-                                        .bright(),
+                                    style_arrows(
+                                        "v".repeat(line_length - range.start.col as usize)
+                                    ),
                                     line_number_max_digits,
                                     range.start.col as usize,
                                 );
@@ -417,13 +434,11 @@ impl ErrorEmitter {
                                     "",
                                     style("|").cyan().bright(),
                                     "",
-                                    style(
+                                    style_arrows(
                                         "^".repeat(
                                             range.end.col as usize - range.start.col as usize
                                         )
-                                    )
-                                    .yellow()
-                                    .bright(),
+                                    ),
                                     line_number_max_digits,
                                     range.start.col as usize,
                                 );
@@ -433,7 +448,7 @@ impl ErrorEmitter {
                                     "{: >3$} {} {}",
                                     "",
                                     style("|").cyan().bright(),
-                                    style("^".repeat(range.end.col as usize)).yellow().bright(),
+                                    style_arrows("^".repeat(range.end.col as usize)),
                                     line_number_max_digits,
                                 );
                             }

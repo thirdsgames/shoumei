@@ -3,11 +3,10 @@ use std::{
     fmt::Display,
     fs::File,
     io::{BufRead, BufReader},
-    ops::{Deref, DerefMut},
     path::PathBuf,
 };
 
-use crate::{Diagnostic, DiagnosticResult, ErrorEmitter, ErrorMessage, Severity, interpreter::{Token, TypeConstructor}};
+use crate::{Diagnostic, DiagnosticResult, ErrorEmitter, ErrorMessage, Severity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Location {
@@ -83,61 +82,65 @@ pub struct Module {
     pub definitions: Vec<Definition>,
 }
 
-/// An object associated with an area in code.
-/// Automatically derefs to the contained value.
-#[derive(Debug)]
-pub struct Ranged<T> {
-    value: T,
-    module_path: ModulePath,
-    range: Range,
-}
-
-impl<T> Deref for Ranged<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
-
-impl<T> DerefMut for Ranged<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.value
-    }
-}
-
-impl<T> Ranged<T> {
-    pub fn module_path(&self) -> &ModulePath {
-        &self.module_path
-    }
-
-    pub fn range(&self) -> &Range {
-        &self.range
-    }
-}
-
 #[derive(Debug)]
 pub enum Type {
     /// An explicitly named type without type parameters, e.g. `Bool`.
-    Named(Ranged<String>),
+    Named(Identifier),
     /// A function `a -> b`.
     /// Functions with more arguments, e.g. `a -> b -> c` are represented as
     /// curried functions, e.g. `a -> (b -> c)`.
     Function(Box<Type>, Box<Type>),
 }
 
+impl Type {
+    pub fn range(&self) -> Range {
+        match self {
+            Type::Named(ident) => ident.range,
+            Type::Function(left, right) => left.range().union(right.range()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Identifier {
+    pub name: String,
+    pub range: Range,
+}
+
 /// A `data` block, used to define sum or product types.
 #[derive(Debug)]
 pub struct Data {
-    pub name: Token,
+    pub identifier: Identifier,
     pub type_ctors: Vec<TypeConstructor>,
+}
+
+#[derive(Debug)]
+pub struct TypeConstructor {
+    pub id: Identifier,
 }
 
 /// A `def` block. Defines a symbol's type and what values it takes under what circumstances.
 #[derive(Debug)]
 pub struct Definition {
-    pub name: Token,
+    pub identifier: Identifier,
     pub symbol_type: Type,
+    pub cases: Vec<DefinitionCase>,
+}
+
+/// Represents a case in a definition where we can replace the left hand side of a pattern with the right hand side.
+#[derive(Debug)]
+pub struct DefinitionCase {
+    pub pattern: Expression,
+    pub replacement: Expression,
+}
+
+#[derive(Debug)]
+pub enum Expression {
+    /// A named variable e.g. `x` or `+`.
+    Variable(Identifier),
+    /// Apply the left hand side to the right hand side.
+    /// E.g. `a b`
+    Apply(Box<Expression>, Box<Expression>),
 }
 
 /// Loads resources from disk, lexing and parsing them.
