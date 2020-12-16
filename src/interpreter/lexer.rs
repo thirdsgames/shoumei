@@ -8,6 +8,7 @@ pub enum TokenType {
     TypeOr,
     Type,
     Arrow,
+    Underscore,
 
     LeftParenthesis,
     RightParenthesis,
@@ -150,6 +151,7 @@ fn token_type_symbol(s: String) -> TokenType {
         "=" => TokenType::Assign,
         ":" => TokenType::Type,
         "->" => TokenType::Arrow,
+        "_" => TokenType::Underscore,
         _ => TokenType::Identifier(s),
     }
 }

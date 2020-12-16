@@ -141,6 +141,8 @@ pub enum Expression {
     /// Apply the left hand side to the right hand side.
     /// E.g. `a b`
     Apply(Box<Expression>, Box<Expression>),
+    /// An underscore `_` representing an unknown.
+    Unknown(Range),
 }
 
 /// Loads resources from disk, lexing and parsing them.

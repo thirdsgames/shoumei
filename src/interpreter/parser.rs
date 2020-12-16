@@ -263,11 +263,78 @@ fn parse_expr<I>(
 where
     I: Iterator<Item = TokenTree>,
 {
-    DiagnosticResult::fail(ErrorMessage::new(
-        String::from("parsed expr"),
-        Severity::Error,
-        Diagnostic::in_file(module_path.clone()),
-    ))
+    let mut terms = Vec::new();
+    while let Some(next_term) = parse_expr_term(module_path, line) {
+        terms.push(next_term);
+    }
+
+    if terms.is_empty() {
+        let start_location = line
+            .peek()
+            .map(|token| token.range().start)
+            .unwrap_or(end_of_line);
+        return DiagnosticResult::fail(ErrorMessage::new(
+            String::from("expected expression"),
+            Severity::Error,
+            Diagnostic::at_location(module_path.clone(), start_location),
+        ));
+    }
+
+    DiagnosticResult::sequence(terms).map(|terms| {
+        let mut terms = terms.into_iter();
+        let first = terms.next().unwrap();
+        terms.into_iter().fold(first, |acc, i| Expression::Apply(Box::new(acc), Box::new(i)))
+    })
+}
+
+/// Parses a single term from an expression by consuming either zero or one token trees from the input.
+/// If the following token did not constitute an expression, nothing is consumed.
+fn parse_expr_term<I>(
+    module_path: &ModulePath,
+    line: &mut Peekable<I>,
+) -> Option<DiagnosticResult<Expression>>
+where
+    I: Iterator<Item = TokenTree>,
+{
+    match line.peek() {
+        Some(TokenTree::Tree { .. }) => {
+            if let Some(TokenTree::Tree { tokens, .. }) = line.next() {
+                let end_of_tree = tokens.last().unwrap().range().end;
+                let mut tree_contents = tokens.into_iter().peekable();
+                let result = parse_expr(module_path, &mut tree_contents, end_of_tree);
+                Some(
+                    result.bind(|result| {
+                        assert_end_of_tree(module_path, tree_contents).map(|_| result)
+                    }),
+                )
+            } else {
+                panic!("line.next() != *line.peek()");
+            }
+        }
+        Some(TokenTree::Token(token)) => match &token.token_type {
+            TokenType::Identifier(_) => {
+                if let Some(TokenTree::Token(token)) = line.next() {
+                    if let TokenType::Identifier(name) = token.token_type {
+                        Some(DiagnosticResult::ok(Expression::Variable(Identifier {
+                            name,
+                            range: token.range,
+                        })))
+                    } else {
+                        panic!("line.next() != *line.peek()");
+                    }
+                } else {
+                    panic!("line.next() != *line.peek()");
+                }
+            }
+            TokenType::Underscore => {
+                let token_range = token.range;
+                line.next();
+                Some(DiagnosticResult::ok(Expression::Unknown(token_range)))
+            },
+            _ => None,
+        },
+        None => None,
+    }
 }
 
 /// `type ::= type_name ("->" type)?`
@@ -338,6 +405,25 @@ fn assert_end_of_line(
             (),
             ErrorMessage::new(
                 String::from("expected end of line"),
+                Severity::Error,
+                Diagnostic::at(module_path.clone(), token.range()),
+            ),
+        )
+    } else {
+        DiagnosticResult::ok(())
+    }
+}
+
+/// Asserts that we are at the end of the current tree.
+fn assert_end_of_tree(
+    module_path: &ModulePath,
+    mut line: impl Iterator<Item = TokenTree>,
+) -> DiagnosticResult<()> {
+    if let Some(token) = line.next() {
+        DiagnosticResult::ok_with(
+            (),
+            ErrorMessage::new(
+                String::from("expected closing bracket"),
                 Severity::Error,
                 Diagnostic::at(module_path.clone(), token.range()),
             ),
