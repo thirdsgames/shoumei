@@ -5,7 +5,7 @@
 //! - indent
 //! - brackets
 //! - parser
-//! - symbols
+//! - types
 //!
 //! As a general rule, each compilation pass may only use types declared in previous passes.
 //!
@@ -19,13 +19,20 @@
 //! information between each other, ensuring (for example) that after a type check phase, all expressions
 //! actually have a type.
 
-use std::{fmt::Display, path::PathBuf};
+use std::{
+    fmt::Display,
+    fs::File,
+    io::{BufRead, BufReader},
+    path::PathBuf,
+};
+
+use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
 pub mod brackets;
 pub mod indent;
 pub mod lexer;
 pub mod parser;
-pub mod symbols;
+pub mod types;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Location {
@@ -90,4 +97,61 @@ impl Display for ModulePath {
         }
         Ok(())
     }
+}
+
+pub fn parse(module_path: &ModulePath) -> DiagnosticResult<parser::ModuleP> {
+    // This chain of `bind`s is very similar to monadic `do` notation in Haskell.
+    // file <- ...
+    // lines <- ...
+    let file = match File::open(PathBuf::from(module_path)) {
+        Ok(file) => file.into(),
+        Err(_) => {
+            let message = ErrorMessage::new(
+                String::from("cannot open file"),
+                Severity::Error,
+                Diagnostic::in_file(module_path.clone()),
+            );
+            DiagnosticResult::fail(message)
+        }
+    };
+
+    let lines = file.bind(|file| {
+        let mut lines = Vec::new();
+        for (line, line_number) in BufReader::new(file).lines().zip(0..) {
+            match line {
+                Ok(line) => {
+                    lines.push(line);
+                }
+                Err(_) => {
+                    return DiagnosticResult::fail(ErrorMessage::new(
+                        format!("file contained invalid UTF-8 on line {}", line_number + 1),
+                        Severity::Error,
+                        Diagnostic::in_file(module_path.clone()),
+                    ));
+                }
+            }
+        }
+        DiagnosticResult::ok(lines)
+    });
+
+    // The use of `deny` means that any error in any compilation step will abort the compilation after the step is finished.
+
+    lines
+        .bind(|lines| lexer::lex(module_path, lines))
+        .deny()
+        .bind(|tokens| indent::process_indent(module_path, tokens))
+        .deny()
+        .bind(|token_block| brackets::process_brackets(module_path, token_block))
+        .deny()
+        .bind(|token_block| parser::parse(module_path, token_block))
+        .deny()
+        .bind(|module| {
+            println!("{:#?}", module);
+            let types = types::compute_types(module_path, &module);
+            println!("{:#?}", types);
+            types.map(|types| (types, module))
+        })
+        .deny()
+        .map(|(types, module)| module)
+        .deny()
 }

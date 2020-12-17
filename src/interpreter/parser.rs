@@ -45,7 +45,7 @@ impl TypeP {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IdentifierP {
     pub name: String,
     pub range: Range,

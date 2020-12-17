@@ -1,11 +1,6 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs::File,
-    io::{BufRead, BufReader},
-    path::PathBuf,
-};
+use std::collections::{HashMap, HashSet};
 
-use crate::{interpreter::*, Diagnostic, DiagnosticResult, ErrorEmitter, ErrorMessage, Severity};
+use crate::{interpreter::*, Diagnostic, ErrorEmitter, ErrorMessage, Severity};
 
 /// Loads resources from disk, lexing and parsing them.
 pub struct ModuleLoader {
@@ -39,48 +34,7 @@ impl ModuleLoader {
         }
         self.currently_loading.insert(module_path.clone());
 
-        // This chain of `bind`s is very similar to monadic `do` notation in Haskell.
-        // file <- ...
-        // lines <- ...
-        let file = match File::open(PathBuf::from(&module_path)) {
-            Ok(file) => file.into(),
-            Err(_) => {
-                let message = ErrorMessage::new(
-                    String::from("cannot open file"),
-                    Severity::Error,
-                    Diagnostic::in_file(module_path.clone()),
-                );
-                DiagnosticResult::fail(message)
-            }
-        };
-
-        let lines = file.bind(|file| {
-            let mut lines = Vec::new();
-            for (line, line_number) in BufReader::new(file).lines().zip(0..) {
-                match line {
-                    Ok(line) => {
-                        lines.push(line);
-                    }
-                    Err(_) => {
-                        return DiagnosticResult::fail(ErrorMessage::new(
-                            format!("file contained invalid UTF-8 on line {}", line_number + 1),
-                            Severity::Error,
-                            Diagnostic::in_file(module_path.clone()),
-                        ));
-                    }
-                }
-            }
-            DiagnosticResult::ok(lines)
-        });
-
-        let tokens = lines.bind(|lines| lexer::lex(&module_path, lines));
-        let token_block = tokens.bind(|tokens| indent::process_indent(&module_path, tokens));
-        let token_block =
-            token_block.bind(|token_block| brackets::process_brackets(&module_path, token_block));
-        let module = token_block.bind(|token_block| parser::parse(&module_path, token_block));
-        println!("{:#?}", module);
-
-        let module = self.error_emitter.consume_diagnostic(module);
+        let module = self.error_emitter.consume_diagnostic(parse(&module_path));
 
         self.currently_loading.remove(&module_path);
         self.modules.insert(module_path, module);

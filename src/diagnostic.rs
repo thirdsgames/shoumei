@@ -151,6 +151,14 @@ impl<T> DiagnosticResult<T> {
         }
     }
 
+    pub fn fail_many(messages: Vec<ErrorMessage>) -> Self {
+        assert!(messages.iter().any(|m| m.severity == Severity::Error));
+        Self {
+            value: None,
+            messages,
+        }
+    }
+
     /// Apply an infallible operation to the value inside this result. If the operation could fail, use [`DiagnosticResult::bind`] instead.
     pub fn map<F, U>(self, f: F) -> DiagnosticResult<U>
     where
@@ -202,6 +210,19 @@ impl<T> DiagnosticResult<T> {
         DiagnosticResult {
             value: Some(self.value),
             messages: self.messages,
+        }
+    }
+
+    /// Converts a successful diagnostic that had one or more `Error` messages into a failed diagnostic (with the same messages).
+    /// Diagnostics without `Error` messages are unaffected.
+    pub fn deny(self) -> Self {
+        if self.messages.iter().any(|m| m.severity == Severity::Error) {
+            Self {
+                value: None,
+                messages: self.messages,
+            }
+        } else {
+            self
         }
     }
 
@@ -345,7 +366,7 @@ impl ErrorEmitter {
                     style(help.message).white().bright()
                 ),
             }
-            self.print_message(help.diagnostic, |s| style(s).white().bright());
+            self.print_message(help.diagnostic, |s| style(s).cyan().bright());
         }
     }
 
