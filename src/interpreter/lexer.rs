@@ -1,6 +1,7 @@
 use std::iter::Peekable;
 
-use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Location, ModulePath, Range, Severity};
+use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
+use super::{Location, ModulePath, Range};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TokenType {

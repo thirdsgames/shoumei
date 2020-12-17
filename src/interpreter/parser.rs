@@ -1,18 +1,80 @@
 use std::iter::Peekable;
 
 use crate::{
-    Data, Definition, DefinitionCase, Diagnostic, DiagnosticResult, ErrorMessage, Expression,
-    HelpMessage, HelpType, Identifier, Location, Module, ModulePath, Severity, Type,
-    TypeConstructor,
+    Diagnostic, DiagnosticResult, ErrorMessage,
+    HelpMessage, HelpType, Module, Severity,
 };
 
-use super::{Token, TokenBlock, TokenLine, TokenTree, TokenType};
+use super::{Location, ModulePath, Range, indent::TokenBlock, indent::TokenLine, indent::TokenTree, lexer::Token, lexer::TokenType};
 
 /// Any top level item such as a definition or theorem.
 #[derive(Debug)]
 enum Item {
     Data(Data),
     Definition(Definition),
+}
+
+#[derive(Debug)]
+pub enum Type {
+    /// An explicitly named type without type parameters, e.g. `Bool`.
+    Named(Identifier),
+    /// A function `a -> b`.
+    /// Functions with more arguments, e.g. `a -> b -> c` are represented as
+    /// curried functions, e.g. `a -> (b -> c)`.
+    Function(Box<Type>, Box<Type>),
+}
+
+impl Type {
+    pub fn range(&self) -> Range {
+        match self {
+            Type::Named(ident) => ident.range,
+            Type::Function(left, right) => left.range().union(right.range()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Identifier {
+    pub name: String,
+    pub range: Range,
+}
+
+/// A `data` block, used to define sum or product types.
+#[derive(Debug)]
+pub struct Data {
+    pub identifier: Identifier,
+    pub type_ctors: Vec<TypeConstructor>,
+}
+
+#[derive(Debug)]
+pub struct TypeConstructor {
+    pub id: Identifier,
+}
+
+/// A `def` block. Defines a symbol's type and what values it takes under what circumstances.
+#[derive(Debug)]
+pub struct Definition {
+    pub identifier: Identifier,
+    pub symbol_type: Type,
+    pub cases: Vec<DefinitionCase>,
+}
+
+/// Represents a case in a definition where we can replace the left hand side of a pattern with the right hand side.
+#[derive(Debug)]
+pub struct DefinitionCase {
+    pub pattern: Expression,
+    pub replacement: Expression,
+}
+
+#[derive(Debug)]
+pub enum Expression {
+    /// A named variable e.g. `x` or `+`.
+    Variable(Identifier),
+    /// Apply the left hand side to the right hand side, e.g. `a b`.
+    /// More complicated expressions e.g. `a b c d` can be desugared into `((a b) c) d`.
+    Apply(Box<Expression>, Box<Expression>),
+    /// An underscore `_` representing an unknown.
+    Unknown(Range),
 }
 
 pub fn parse(module_path: &ModulePath, token_block: TokenBlock) -> DiagnosticResult<Module> {
@@ -283,7 +345,9 @@ where
     DiagnosticResult::sequence(terms).map(|terms| {
         let mut terms = terms.into_iter();
         let first = terms.next().unwrap();
-        terms.into_iter().fold(first, |acc, i| Expression::Apply(Box::new(acc), Box::new(i)))
+        terms.into_iter().fold(first, |acc, i| {
+            Expression::Apply(Box::new(acc), Box::new(i))
+        })
     })
 }
 
@@ -330,7 +394,7 @@ where
                 let token_range = token.range;
                 line.next();
                 Some(DiagnosticResult::ok(Expression::Unknown(token_range)))
-            },
+            }
             _ => None,
         },
         None => None,

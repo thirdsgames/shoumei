@@ -1,6 +1,6 @@
-use crate::{Diagnostic, DiagnosticResult, ErrorMessage, ModulePath, Range, Severity};
+use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
-use super::{LeadingWhitespace, Token};
+use super::{lexer::LeadingWhitespace, lexer::Token, ModulePath, Range};
 
 /// A token block represents an indented block of content, or indeed the whole file.
 #[derive(Debug, Default)]

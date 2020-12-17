@@ -1,148 +1,19 @@
 use std::{
     collections::{HashMap, HashSet},
-    fmt::Display,
     fs::File,
     io::{BufRead, BufReader},
     path::PathBuf,
 };
 
-use crate::{Diagnostic, DiagnosticResult, ErrorEmitter, ErrorMessage, Severity};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Location {
-    /// A 0-indexed line number.
-    pub line: u32,
-    /// A 0-indexed column number.
-    pub col: u32,
-}
-
-impl Location {
-    pub fn new(line: u32, col: u32) -> Self {
-        Self { line, col }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Range {
-    /// The start of this range of characters, inclusive.
-    pub start: Location,
-    /// The end of this range of characters, exclusive.
-    pub end: Location,
-}
-
-impl From<Location> for Range {
-    fn from(location: Location) -> Self {
-        Self {
-            start: location,
-            end: Location {
-                line: location.line,
-                col: location.col + 1,
-            },
-        }
-    }
-}
-
-impl Range {
-    pub fn union(self, other: Range) -> Range {
-        Range {
-            start: self.start.min(other.start),
-            end: self.end.max(other.end),
-        }
-    }
-}
-
-/// A list of path segments. These cannot contain forward or backward slashes, or colons.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ModulePath(pub Vec<String>);
-
-impl<'a> From<&'a ModulePath> for PathBuf {
-    fn from(path: &'a ModulePath) -> Self {
-        path.0.iter().collect()
-    }
-}
-
-impl Display for ModulePath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (i, item) in self.0.iter().enumerate() {
-            if i != 0 {
-                write!(f, "/")?;
-            }
-            write!(f, "{}", item)?;
-        }
-        Ok(())
-    }
-}
+use crate::{Diagnostic, DiagnosticResult, ErrorEmitter, ErrorMessage, Severity, interpreter::*};
 
 /// A single `.shoumei` file is called a module. It may export theorems, proofs, definitions, etc.
 /// This `Module` struct contains the parsed abstract syntax tree of a module.
 /// Module inclusions must be hierarchical and non-circular. This prevents circular proofs.
 #[derive(Debug)]
 pub struct Module {
-    pub data: Vec<Data>,
-    pub definitions: Vec<Definition>,
-}
-
-#[derive(Debug)]
-pub enum Type {
-    /// An explicitly named type without type parameters, e.g. `Bool`.
-    Named(Identifier),
-    /// A function `a -> b`.
-    /// Functions with more arguments, e.g. `a -> b -> c` are represented as
-    /// curried functions, e.g. `a -> (b -> c)`.
-    Function(Box<Type>, Box<Type>),
-}
-
-impl Type {
-    pub fn range(&self) -> Range {
-        match self {
-            Type::Named(ident) => ident.range,
-            Type::Function(left, right) => left.range().union(right.range()),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Identifier {
-    pub name: String,
-    pub range: Range,
-}
-
-/// A `data` block, used to define sum or product types.
-#[derive(Debug)]
-pub struct Data {
-    pub identifier: Identifier,
-    pub type_ctors: Vec<TypeConstructor>,
-}
-
-#[derive(Debug)]
-pub struct TypeConstructor {
-    pub id: Identifier,
-}
-
-/// A `def` block. Defines a symbol's type and what values it takes under what circumstances.
-#[derive(Debug)]
-pub struct Definition {
-    pub identifier: Identifier,
-    pub symbol_type: Type,
-    pub cases: Vec<DefinitionCase>,
-}
-
-/// Represents a case in a definition where we can replace the left hand side of a pattern with the right hand side.
-#[derive(Debug)]
-pub struct DefinitionCase {
-    pub pattern: Expression,
-    pub replacement: Expression,
-}
-
-#[derive(Debug)]
-pub enum Expression {
-    /// A named variable e.g. `x` or `+`.
-    Variable(Identifier),
-    /// Apply the left hand side to the right hand side.
-    /// E.g. `a b`
-    Apply(Box<Expression>, Box<Expression>),
-    /// An underscore `_` representing an unknown.
-    Unknown(Range),
+    pub data: Vec<parser::Data>,
+    pub definitions: Vec<parser::Definition>,
 }
 
 /// Loads resources from disk, lexing and parsing them.
@@ -211,13 +82,11 @@ impl ModuleLoader {
             DiagnosticResult::ok(lines)
         });
 
-        let tokens = lines.bind(|lines| crate::interpreter::lex(&module_path, lines));
+        let tokens = lines.bind(|lines| lexer::lex(&module_path, lines));
+        let token_block = tokens.bind(|tokens| indent::process_indent(&module_path, tokens));
         let token_block =
-            tokens.bind(|tokens| crate::interpreter::process_indent(&module_path, tokens));
-        let token_block = token_block
-            .bind(|token_block| crate::interpreter::process_brackets(&module_path, token_block));
-        let module =
-            token_block.bind(|token_block| crate::interpreter::parse(&module_path, token_block));
+            token_block.bind(|token_block| brackets::process_brackets(&module_path, token_block));
+        let module = token_block.bind(|token_block| parser::parse(&module_path, token_block));
         println!("{:#?}", module);
 
         let module = self.error_emitter.consume_diagnostic(module);

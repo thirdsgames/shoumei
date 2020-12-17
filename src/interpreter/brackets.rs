@@ -1,8 +1,10 @@
 use crate::{
-    Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, ModulePath, Range, Severity,
+    Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity,
 };
 
-use super::{BracketType, TokenBlock, TokenLine, TokenTree, TokenType};
+use super::{
+    indent::BracketType, indent::TokenBlock, indent::TokenLine, indent::TokenTree, lexer::TokenType, ModulePath, Range
+};
 
 /// Processes bracket pairs to remove explicit bracket characters in return for structural representation of operation order.
 /// This uses `TokenTree`s to represent the structure.
