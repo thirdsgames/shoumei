@@ -1,9 +1,10 @@
-use crate::{
-    Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity,
-};
+//! Searches each line for opening and closing brackets, and groups the contents of these brackets into "token trees".
+
+use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
 use super::{
-    indent::BracketType, indent::TokenBlock, indent::TokenLine, indent::TokenTree, lexer::TokenType, ModulePath, Range
+    indent::BracketType, indent::TokenBlock, indent::TokenLine, indent::TokenTree,
+    lexer::TokenType, ModulePath, Range,
 };
 
 /// Processes bracket pairs to remove explicit bracket characters in return for structural representation of operation order.

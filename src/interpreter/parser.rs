@@ -1,83 +1,95 @@
+//! Converts a linear sequence of blocks, lines and tokens into a syntax tree representing the module.
+
 use std::iter::Peekable;
 
-use crate::{
-    Diagnostic, DiagnosticResult, ErrorMessage,
-    HelpMessage, HelpType, Module, Severity,
+use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
+
+use super::{
+    indent::TokenBlock, indent::TokenLine, indent::TokenTree, lexer::Token, lexer::TokenType,
+    Location, ModulePath, Range,
 };
 
-use super::{Location, ModulePath, Range, indent::TokenBlock, indent::TokenLine, indent::TokenTree, lexer::Token, lexer::TokenType};
+/// A single `.shoumei` file is called a module. It may export theorems, proofs, definitions, etc.
+/// This `Module` struct contains the parsed abstract syntax tree of a module.
+/// Module inclusions must be hierarchical and non-circular. This prevents circular proofs.
+#[derive(Debug)]
+pub struct ModuleP {
+    pub data: Vec<DataP>,
+    pub definitions: Vec<DefinitionP>,
+}
 
 /// Any top level item such as a definition or theorem.
+/// No `P` suffix is needed, as this is a private type just for the parser.
 #[derive(Debug)]
 enum Item {
-    Data(Data),
-    Definition(Definition),
+    Data(DataP),
+    Definition(DefinitionP),
 }
 
 #[derive(Debug)]
-pub enum Type {
+pub enum TypeP {
     /// An explicitly named type without type parameters, e.g. `Bool`.
-    Named(Identifier),
+    Named(IdentifierP),
     /// A function `a -> b`.
     /// Functions with more arguments, e.g. `a -> b -> c` are represented as
     /// curried functions, e.g. `a -> (b -> c)`.
-    Function(Box<Type>, Box<Type>),
+    Function(Box<TypeP>, Box<TypeP>),
 }
 
-impl Type {
+impl TypeP {
     pub fn range(&self) -> Range {
         match self {
-            Type::Named(ident) => ident.range,
-            Type::Function(left, right) => left.range().union(right.range()),
+            TypeP::Named(ident) => ident.range,
+            TypeP::Function(left, right) => left.range().union(right.range()),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Identifier {
+pub struct IdentifierP {
     pub name: String,
     pub range: Range,
 }
 
 /// A `data` block, used to define sum or product types.
 #[derive(Debug)]
-pub struct Data {
-    pub identifier: Identifier,
-    pub type_ctors: Vec<TypeConstructor>,
+pub struct DataP {
+    pub identifier: IdentifierP,
+    pub type_ctors: Vec<TypeConstructorP>,
 }
 
 #[derive(Debug)]
-pub struct TypeConstructor {
-    pub id: Identifier,
+pub struct TypeConstructorP {
+    pub id: IdentifierP,
 }
 
 /// A `def` block. Defines a symbol's type and what values it takes under what circumstances.
 #[derive(Debug)]
-pub struct Definition {
-    pub identifier: Identifier,
-    pub symbol_type: Type,
-    pub cases: Vec<DefinitionCase>,
+pub struct DefinitionP {
+    pub identifier: IdentifierP,
+    pub symbol_type: TypeP,
+    pub cases: Vec<DefinitionCaseP>,
 }
 
 /// Represents a case in a definition where we can replace the left hand side of a pattern with the right hand side.
 #[derive(Debug)]
-pub struct DefinitionCase {
-    pub pattern: Expression,
-    pub replacement: Expression,
+pub struct DefinitionCaseP {
+    pub pattern: ExpressionP,
+    pub replacement: ExpressionP,
 }
 
 #[derive(Debug)]
-pub enum Expression {
+pub enum ExpressionP {
     /// A named variable e.g. `x` or `+`.
-    Variable(Identifier),
+    Variable(IdentifierP),
     /// Apply the left hand side to the right hand side, e.g. `a b`.
     /// More complicated expressions e.g. `a b c d` can be desugared into `((a b) c) d`.
-    Apply(Box<Expression>, Box<Expression>),
+    Apply(Box<ExpressionP>, Box<ExpressionP>),
     /// An underscore `_` representing an unknown.
     Unknown(Range),
 }
 
-pub fn parse(module_path: &ModulePath, token_block: TokenBlock) -> DiagnosticResult<Module> {
+pub fn parse(module_path: &ModulePath, token_block: TokenBlock) -> DiagnosticResult<ModuleP> {
     let mut lines = token_block.lines.into_iter();
     let mut items = Vec::new();
     while let Some(next) = lines.next() {
@@ -93,7 +105,7 @@ pub fn parse(module_path: &ModulePath, token_block: TokenBlock) -> DiagnosticRes
                 Item::Definition(i) => definitions.push(i),
             }
         }
-        Module { data, definitions }
+        ModuleP { data, definitions }
     })
 }
 
@@ -140,7 +152,7 @@ fn parse_data<I>(
     module_path: &ModulePath,
     mut line: Peekable<I>,
     end_of_line: Location,
-) -> DiagnosticResult<Data>
+) -> DiagnosticResult<DataP>
 where
     I: Iterator<Item = TokenTree>,
 {
@@ -155,7 +167,7 @@ where
         );
         assign_symbol.bind(|_| {
             let type_ctors = parse_type_ctors(module_path, line, end_of_line);
-            type_ctors.map(|type_ctors| Data {
+            type_ctors.map(|type_ctors| DataP {
                 identifier,
                 type_ctors,
             })
@@ -168,7 +180,7 @@ fn parse_type_ctors<I>(
     module_path: &ModulePath,
     mut line: Peekable<I>,
     end_of_line: Location,
-) -> DiagnosticResult<Vec<TypeConstructor>>
+) -> DiagnosticResult<Vec<TypeConstructorP>>
 where
     I: Iterator<Item = TokenTree>,
 {
@@ -204,11 +216,11 @@ fn parse_type_ctor<I>(
     module_path: &ModulePath,
     line: &mut Peekable<I>,
     end_of_line: Location,
-) -> DiagnosticResult<TypeConstructor>
+) -> DiagnosticResult<TypeConstructorP>
 where
     I: Iterator<Item = TokenTree>,
 {
-    parse_identifier(module_path, line, end_of_line).map(|id| TypeConstructor { id })
+    parse_identifier(module_path, line, end_of_line).map(|id| TypeConstructorP { id })
 }
 
 /// `def ::= identifier ":" type "\n" def_cases`
@@ -217,7 +229,7 @@ fn parse_def<I>(
     mut line: Peekable<I>,
     lines: &mut impl Iterator<Item = TokenLine>,
     end_of_line: Location,
-) -> DiagnosticResult<Definition>
+) -> DiagnosticResult<DefinitionP>
 where
     I: Iterator<Item = TokenTree>,
 {
@@ -232,7 +244,7 @@ where
             )
             .bind(|_| parse_type(module_path, &mut line, end_of_line))
             .bind(|symbol_type| {
-                assert_end_of_line(module_path, line).map(|_| Definition {
+                assert_end_of_line(module_path, line).map(|_| DefinitionP {
                     identifier,
                     symbol_type,
                     cases: Vec::new(),
@@ -274,7 +286,7 @@ where
 fn parse_def_cases(
     module_path: &ModulePath,
     token_block: TokenBlock,
-) -> DiagnosticResult<Vec<DefinitionCase>> {
+) -> DiagnosticResult<Vec<DefinitionCaseP>> {
     token_block
         .lines
         .into_iter()
@@ -284,7 +296,7 @@ fn parse_def_cases(
 
 /// `def_case ::= expr "=" expr`
 /// The left expression is a pattern expression, and the right hand side is an actual expression.
-fn parse_def_case(module_path: &ModulePath, line: TokenLine) -> DiagnosticResult<DefinitionCase> {
+fn parse_def_case(module_path: &ModulePath, line: TokenLine) -> DiagnosticResult<DefinitionCaseP> {
     match line {
         TokenLine::Block(block) => DiagnosticResult::fail(ErrorMessage::new(
             String::from("expected a definition case, got an indented block"),
@@ -304,7 +316,7 @@ fn parse_def_case(module_path: &ModulePath, line: TokenLine) -> DiagnosticResult
                 )
                 .bind(|_| {
                     parse_expr(module_path, &mut line, end_of_line).bind(|rhs| {
-                        assert_end_of_line(module_path, line).map(|_| DefinitionCase {
+                        assert_end_of_line(module_path, line).map(|_| DefinitionCaseP {
                             pattern: lhs,
                             replacement: rhs,
                         })
@@ -321,7 +333,7 @@ fn parse_expr<I>(
     module_path: &ModulePath,
     line: &mut Peekable<I>,
     end_of_line: Location,
-) -> DiagnosticResult<Expression>
+) -> DiagnosticResult<ExpressionP>
 where
     I: Iterator<Item = TokenTree>,
 {
@@ -346,7 +358,7 @@ where
         let mut terms = terms.into_iter();
         let first = terms.next().unwrap();
         terms.into_iter().fold(first, |acc, i| {
-            Expression::Apply(Box::new(acc), Box::new(i))
+            ExpressionP::Apply(Box::new(acc), Box::new(i))
         })
     })
 }
@@ -356,7 +368,7 @@ where
 fn parse_expr_term<I>(
     module_path: &ModulePath,
     line: &mut Peekable<I>,
-) -> Option<DiagnosticResult<Expression>>
+) -> Option<DiagnosticResult<ExpressionP>>
 where
     I: Iterator<Item = TokenTree>,
 {
@@ -379,7 +391,7 @@ where
             TokenType::Identifier(_) => {
                 if let Some(TokenTree::Token(token)) = line.next() {
                     if let TokenType::Identifier(name) = token.token_type {
-                        Some(DiagnosticResult::ok(Expression::Variable(Identifier {
+                        Some(DiagnosticResult::ok(ExpressionP::Variable(IdentifierP {
                             name,
                             range: token.range,
                         })))
@@ -393,7 +405,7 @@ where
             TokenType::Underscore => {
                 let token_range = token.range;
                 line.next();
-                Some(DiagnosticResult::ok(Expression::Unknown(token_range)))
+                Some(DiagnosticResult::ok(ExpressionP::Unknown(token_range)))
             }
             _ => None,
         },
@@ -407,18 +419,18 @@ fn parse_type<I>(
     module_path: &ModulePath,
     line: &mut Peekable<I>,
     end_of_line: Location,
-) -> DiagnosticResult<Type>
+) -> DiagnosticResult<TypeP>
 where
     I: Iterator<Item = TokenTree>,
 {
     parse_identifier_with_message(module_path, line, end_of_line, "expected type name").bind(
         |type_name| {
-            let parsed_type = Type::Named(type_name);
+            let parsed_type = TypeP::Named(type_name);
             if peek_token(line, |token| matches!(token.token_type, TokenType::Arrow)) {
                 // Consume the `->` token.
                 line.next();
                 parse_type(module_path, line, end_of_line)
-                    .map(|rhs_type| Type::Function(Box::new(parsed_type), Box::new(rhs_type)))
+                    .map(|rhs_type| TypeP::Function(Box::new(parsed_type), Box::new(rhs_type)))
             } else {
                 DiagnosticResult::ok(parsed_type)
             }
@@ -430,7 +442,7 @@ fn parse_identifier(
     module_path: &ModulePath,
     line: &mut impl Iterator<Item = TokenTree>,
     end_of_line: Location,
-) -> DiagnosticResult<Identifier> {
+) -> DiagnosticResult<IdentifierP> {
     parse_identifier_with_message(module_path, line, end_of_line, "expected identifier")
 }
 
@@ -439,7 +451,7 @@ fn parse_identifier_with_message(
     line: &mut impl Iterator<Item = TokenTree>,
     end_of_line: Location,
     fail_message: &str,
-) -> DiagnosticResult<Identifier> {
+) -> DiagnosticResult<IdentifierP> {
     parse_token(
         module_path,
         line,
@@ -449,7 +461,7 @@ fn parse_identifier_with_message(
     )
     .map(|token| {
         if let TokenType::Identifier(name) = token.token_type {
-            Identifier {
+            IdentifierP {
                 name,
                 range: token.range,
             }

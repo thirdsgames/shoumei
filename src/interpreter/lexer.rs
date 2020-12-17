@@ -1,7 +1,9 @@
+//! Converts each line of an input into a list of tokens, storing the leading whitespace in front of each line.
+
 use std::iter::Peekable;
 
-use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 use super::{Location, ModulePath, Range};
+use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TokenType {

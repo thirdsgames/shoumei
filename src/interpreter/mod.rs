@@ -1,6 +1,23 @@
 //! The interpreter module contains all of the different parse steps used to compile a `.shoumei` module.
-//! The various compilation passes are declared here in order of execution.
+//!
+//! The compilation passes are (in order of execution):
+//! - lexer
+//! - indent
+//! - brackets
+//! - parser
+//! - symbols
+//!
 //! As a general rule, each compilation pass may only use types declared in previous passes.
+//!
+//! Types may have certain suffixes to declare what information they have:
+//! - `P`: just been parsed, no extra information has been deduced.
+//!   No type has been deduced, and no effort has been made to ensure syntactic correctness
+//!   past the (lenient) parser.
+//! - (no suffix): types have been deduced and references have been resolved.
+//!
+//! Using type name suffixes as a form of type state helps to ensure that compiler phases can never leak bad
+//! information between each other, ensuring (for example) that after a type check phase, all expressions
+//! actually have a type.
 
 use std::{fmt::Display, path::PathBuf};
 

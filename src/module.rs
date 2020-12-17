@@ -5,16 +5,7 @@ use std::{
     path::PathBuf,
 };
 
-use crate::{Diagnostic, DiagnosticResult, ErrorEmitter, ErrorMessage, Severity, interpreter::*};
-
-/// A single `.shoumei` file is called a module. It may export theorems, proofs, definitions, etc.
-/// This `Module` struct contains the parsed abstract syntax tree of a module.
-/// Module inclusions must be hierarchical and non-circular. This prevents circular proofs.
-#[derive(Debug)]
-pub struct Module {
-    pub data: Vec<parser::Data>,
-    pub definitions: Vec<parser::Definition>,
-}
+use crate::{interpreter::*, Diagnostic, DiagnosticResult, ErrorEmitter, ErrorMessage, Severity};
 
 /// Loads resources from disk, lexing and parsing them.
 pub struct ModuleLoader {
@@ -23,7 +14,7 @@ pub struct ModuleLoader {
     currently_loading: HashSet<ModulePath>,
     /// A map containing all lexed and parsed modules.
     /// If a module could not be parsed, the result here is None to show that
-    modules: HashMap<ModulePath, Option<Module>>,
+    modules: HashMap<ModulePath, Option<parser::ModuleP>>,
     error_emitter: ErrorEmitter,
 }
 

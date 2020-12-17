@@ -1,3 +1,5 @@
+//! Analyses the leading whitespace at the beginning of every line in order to split the program into logical blocks.
+
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
 use super::{lexer::LeadingWhitespace, lexer::Token, ModulePath, Range};
