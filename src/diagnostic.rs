@@ -271,6 +271,14 @@ impl<T> DiagnosticResult<T> {
     pub fn failed(&self) -> bool {
         self.value.is_none()
     }
+
+    /// Splits up this diagnostic result into its value and its error messages.
+    /// It is your responsibility to put these error messages back inside another diagnostic result.
+    /// Failure to do so will result in errors not being displayed, or invalid programs erroneously
+    /// being considered correct.
+    pub fn destructure(self) -> (Option<T>, Vec<ErrorMessage>) {
+        (self.value, self.messages)
+    }
 }
 
 impl<T> FromIterator<DiagnosticResult<T>> for DiagnosticResult<Vec<T>> {

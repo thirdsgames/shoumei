@@ -1,18 +1,24 @@
 //! The interpreter module contains all of the different parse steps used to compile a `.shoumei` module.
 //!
 //! The compilation passes are (in order of execution):
-//! - lexer
-//! - indent
-//! - brackets
-//! - parser
-//! - types
+//! - `lexer`
+//! - `indent`
+//! - `brackets`
+//! - `parser`
+//! - `types` (after this step, `type_resolve` can be used)
+//! - `index`
+//!
 //!
 //! As a general rule, each compilation pass may only use types declared in previous passes.
 //!
-//! Types may have certain suffixes to declare what information they have:
-//! - `P`: just been parsed, no extra information has been deduced.
+//! Types may have certain suffixes to declare what information they contain and where they should be used:
+//! - `P`: just been Parsed, no extra information has been deduced.
 //!   No type has been deduced, and no effort has been made to ensure syntactic correctness
 //!   past the (lenient) parser.
+//! - `C`: an intermediate data Cache, used when we're still in the middle of computing the index.
+//!   After the index has been computed, we should not need to use `P` or `C` data,
+//!   only `I` data should be required.
+//! - `I`: an Index entry for the item.
 //! - (no suffix): types have been deduced and references have been resolved.
 //!
 //! Using type name suffixes as a form of type state helps to ensure that compiler phases can never leak bad
@@ -30,8 +36,10 @@ use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
 pub mod brackets;
 pub mod indent;
+pub mod index;
 pub mod lexer;
 pub mod parser;
+pub mod type_resolve;
 pub mod types;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -99,6 +107,14 @@ impl Display for ModulePath {
     }
 }
 
+/// A fully qualified name referring to a top-level item declared in a `.shoumei` module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualifiedName {
+    pub module_path: ModulePath,
+    pub name: String,
+    pub range: Range,
+}
+
 pub fn parse(module_path: &ModulePath) -> DiagnosticResult<parser::ModuleP> {
     // This chain of `bind`s is very similar to monadic `do` notation in Haskell.
     // file <- ...
@@ -149,9 +165,20 @@ pub fn parse(module_path: &ModulePath) -> DiagnosticResult<parser::ModuleP> {
             println!("{:#?}", module);
             let types = types::compute_types(module_path, &module);
             println!("{:#?}", types);
-            types.map(|types| (types, module))
+            let project_types = types.map(|types| {
+                let mut project_types = types::ProjectTypesC::new();
+                project_types.insert(module_path.clone(), types);
+                project_types
+            });
+            project_types.map(|project_types| (project_types, module))
         })
         .deny()
-        .map(|(types, module)| module)
+        .bind(|(project_types, module)| {
+            let index = index::index(module_path, &module, &project_types);
+            println!("{:#?}", index);
+            index.map(|index| (project_types, index, module))
+        })
+        .deny()
+        .map(|(project_types, index, module)| module)
         .deny()
 }

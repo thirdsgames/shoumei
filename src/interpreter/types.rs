@@ -1,4 +1,4 @@
-//! Indexes all of the types declared in a module, specifically, all `data` statements.
+//! Caches all of the types declared in a module, specifically, all `data` statements.
 //!
 //! This module does not validate the contents of `def` blocks to check that their types match and patterns are exhaustive,
 //! that is kept to a later type checking phase.
@@ -13,30 +13,33 @@ use super::{
 };
 
 /// A set of all types declared in a single module, mapping type names to their declarations.
-pub type ModuleTypes = HashMap<String, TypeDeclaration>;
+pub type ModuleTypesC = HashMap<String, TypeDeclarationC>;
+
+/// All types known about in an entire project.
+pub type ProjectTypesC = HashMap<ModulePath, ModuleTypesC>;
 
 /// A type declaration, e.g. `data Bool = True | False`.
 #[derive(Debug)]
-pub struct TypeDeclaration {
+pub struct TypeDeclarationC {
     pub name: DefinedName,
-    pub decl_type: TypeDeclarationType,
+    pub decl_type: TypeDeclarationTypeC,
 }
 
 #[derive(Debug)]
-pub enum TypeDeclarationType {
-    Data(Data),
+pub enum TypeDeclarationTypeC {
+    Data(DataC),
 }
 
 /// A `data` statement, e.g. `data Bool = True | False`.
 #[derive(Debug)]
-pub struct Data {
+pub struct DataC {
     /// A list of all the type constructors for a `data` statement. For example, in `data Bool = True | False`, the two
     /// type constructors are `True` and `False`.
-    pub type_ctors: Vec<TypeConstructor>,
+    pub type_ctors: Vec<TypeConstructorC>,
 }
 
 #[derive(Debug)]
-pub struct TypeConstructor {
+pub struct TypeConstructorC {
     pub name: DefinedName,
 }
 
@@ -62,9 +65,9 @@ impl From<IdentifierP> for DefinedName {
 }
 
 /// Computes the types declared in the module.
-pub fn compute_types(module_path: &ModulePath, module: &ModuleP) -> DiagnosticResult<ModuleTypes> {
+pub fn compute_types(module_path: &ModulePath, module: &ModuleP) -> DiagnosticResult<ModuleTypesC> {
     let mut messages = Vec::new();
-    let mut types = ModuleTypes::new();
+    let mut types = ModuleTypesC::new();
     for data in &module.data {
         let entry = types.entry(data.identifier.name.clone());
         match entry {
@@ -85,7 +88,7 @@ pub fn compute_types(module_path: &ModulePath, module: &ModuleP) -> DiagnosticRe
             Entry::Vacant(vacant) => {
                 // This type has not yet been defined.
                 // So, let's add it to the list of types.
-                let mut type_ctors = Vec::<TypeConstructor>::new();
+                let mut type_ctors = Vec::<TypeConstructorC>::new();
                 for type_ctor in &data.type_ctors {
                     // Is this a duplicate type constructor name?
                     let mut was_valid = true;
@@ -108,14 +111,14 @@ pub fn compute_types(module_path: &ModulePath, module: &ModuleP) -> DiagnosticRe
                         }
                     }
                     if was_valid {
-                        type_ctors.push(TypeConstructor {
+                        type_ctors.push(TypeConstructorC {
                             name: type_ctor.id.clone().into(),
                         });
                     }
                 }
-                vacant.insert(TypeDeclaration {
+                vacant.insert(TypeDeclarationC {
                     name: data.identifier.clone().into(),
-                    decl_type: TypeDeclarationType::Data(Data { type_ctors }),
+                    decl_type: TypeDeclarationTypeC::Data(DataC { type_ctors }),
                 });
             }
         }
