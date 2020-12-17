@@ -6,7 +6,12 @@ use std::collections::{hash_map::Entry, HashMap};
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
-use super::{ModulePath, QualifiedName, Range, parser::{ModuleP, TypeConstructorP}, type_resolve::{resolve_typep, Type}, types::{DefinedName, ProjectTypesC}};
+use super::{
+    parser::ModuleP,
+    type_resolve::{resolve_typep, Type},
+    types::{DefinedName, ProjectTypesC},
+    ModulePath, QualifiedName, Range,
+};
 
 /// An index of all top-level items in a module.
 ///
@@ -20,6 +25,7 @@ pub struct ModuleIndex {
 /// A type declaration, e.g. `data Bool = True | False`.
 #[derive(Debug)]
 pub struct TypeDeclarationI {
+    /// This is kept here mostly because it contains the `Range` where it was defined.
     pub name: DefinedName,
     pub decl_type: TypeDeclarationTypeI,
 }
@@ -74,7 +80,11 @@ pub fn index(
     for definition in &module.definitions {
         match symbols.entry(definition.identifier.name.clone()) {
             Entry::Occupied(occupied) => {
-                messages.push(name_used_earlier(module_path, definition.identifier.range, occupied.get().name.range));
+                messages.push(name_used_earlier(
+                    module_path,
+                    definition.identifier.range,
+                    occupied.get().name.range,
+                ));
             }
             Entry::Vacant(vacant) => {
                 // Let's add this definition into the map.
@@ -101,7 +111,11 @@ pub fn index(
         });
         match types.entry(data.identifier.name.clone()) {
             Entry::Occupied(occupied) => {
-                messages.push(name_used_earlier(module_path, data.identifier.range, occupied.get().name.range));
+                messages.push(name_used_earlier(
+                    module_path,
+                    data.identifier.range,
+                    occupied.get().name.range,
+                ));
             }
             Entry::Vacant(vacant) => {
                 // Let's add the definition into the map.
@@ -109,7 +123,11 @@ pub fn index(
                     // We need to add each type constructor as a function.
                     match symbols.entry(type_ctor.id.name.clone()) {
                         Entry::Occupied(occupied) => {
-                            messages.push(name_used_earlier(module_path, type_ctor.id.range, occupied.get().name.range));
+                            messages.push(name_used_earlier(
+                                module_path,
+                                type_ctor.id.range,
+                                occupied.get().name.range,
+                            ));
                         }
                         Entry::Vacant(vacant) => {
                             // Let's add the type constructor as a function.
@@ -124,7 +142,11 @@ pub fn index(
                     }
                 }
                 let datai = DataI {
-                    type_ctors: data.type_ctors.iter().map(|type_ctor| type_ctor.id.name.clone()).collect(),
+                    type_ctors: data
+                        .type_ctors
+                        .iter()
+                        .map(|type_ctor| type_ctor.id.name.clone())
+                        .collect(),
                 };
                 vacant.insert(TypeDeclarationI {
                     name: data.identifier.clone().into(),

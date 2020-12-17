@@ -26,7 +26,7 @@
 //! actually have a type.
 
 use std::{
-    fmt::Display,
+    fmt::{Debug, Display},
     fs::File,
     io::{BufRead, BufReader},
     path::PathBuf,
@@ -86,12 +86,14 @@ impl Range {
 }
 
 /// A list of path segments. These cannot contain forward or backward slashes, or colons.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ModulePath(pub Vec<String>);
 
 impl<'a> From<&'a ModulePath> for PathBuf {
     fn from(path: &'a ModulePath) -> Self {
-        path.0.iter().collect()
+        let mut buf = path.0.iter().collect::<PathBuf>();
+        buf.set_extension("shoumei");
+        buf
     }
 }
 
@@ -99,7 +101,7 @@ impl Display for ModulePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, item) in self.0.iter().enumerate() {
             if i != 0 {
-                write!(f, "/")?;
+                write!(f, "::")?;
             }
             write!(f, "{}", item)?;
         }
@@ -107,12 +109,30 @@ impl Display for ModulePath {
     }
 }
 
+impl Debug for ModulePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
 /// A fully qualified name referring to a top-level item declared in a `.shoumei` module.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct QualifiedName {
     pub module_path: ModulePath,
     pub name: String,
     pub range: Range,
+}
+
+impl Display for QualifiedName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", self.module_path, self.name)
+    }
+}
+
+impl Debug for QualifiedName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
 }
 
 pub fn parse(module_path: &ModulePath) -> DiagnosticResult<parser::ModuleP> {

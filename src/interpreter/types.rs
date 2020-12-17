@@ -3,7 +3,10 @@
 //! This module does not validate the contents of `def` blocks to check that their types match and patterns are exhaustive,
 //! that is kept to a later type checking phase.
 
-use std::collections::{hash_map::Entry, HashMap};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    fmt::{Debug, Display},
+};
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
@@ -49,7 +52,6 @@ pub struct TypeConstructorC {
 ///
 /// This type is not `Clone` because it is unsound to have two symbols with identical names.
 /// You can refer to defined names using qualified names.
-#[derive(Debug)]
 pub struct DefinedName {
     pub name: String,
     pub range: Range,
@@ -61,6 +63,18 @@ impl From<IdentifierP> for DefinedName {
             name: id.name,
             range: id.range,
         }
+    }
+}
+
+impl Display for DefinedName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl Debug for DefinedName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
     }
 }
 

@@ -9,7 +9,7 @@ fn main() {
     let mut loader = ModuleLoader::new(ErrorEmitter::new());
     loader.load(interpreter::ModulePath(vec![
         String::from("input"),
-        String::from("test.shoumei"),
+        String::from("test"),
     ]));
     loader.take_error_emitter().emit_all();
 }

@@ -390,7 +390,7 @@ impl ErrorEmitter {
             let line_number_max_digits = range.start.line.max(range.end.line).to_string().len();
 
             println!(
-                "{}{} {}:{}:{}",
+                "{}{} {} @ {}:{}",
                 " ".repeat(line_number_max_digits),
                 style("-->").cyan().bright(),
                 diagnostic.module_path,
