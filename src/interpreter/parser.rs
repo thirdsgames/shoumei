@@ -90,6 +90,16 @@ pub enum ExpressionP {
     Unknown(Range),
 }
 
+impl ExpressionP {
+    pub fn range(&self) -> Range {
+        match self {
+            ExpressionP::Variable(identifier) => identifier.range,
+            ExpressionP::Apply(left, right) => left.range().union(right.range()),
+            ExpressionP::Unknown(range) => *range,
+        }
+    }
+}
+
 pub fn parse(module_path: &ModulePath, token_block: TokenBlock) -> DiagnosticResult<ModuleP> {
     let mut lines = token_block.lines.into_iter();
     let mut items = Vec::new();
