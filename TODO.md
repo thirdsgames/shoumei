@@ -1,0 +1,2 @@
+- `QualifiedName` could have two `range` fields, the range the name appeared in source, and the range it points to
+- `Identifier` should have a qualified variant

@@ -19,8 +19,12 @@ use super::{
 #[derive(Debug)]
 pub struct ModuleIndex {
     pub types: HashMap<String, TypeDeclarationI>,
+    /// Maps type constructor names onto the types that they construct.
+    pub type_ctors: HashMap<String, String>,
     pub symbols: HashMap<String, SymbolI>,
 }
+
+pub type ProjectIndex = HashMap<ModulePath, ModuleIndex>;
 
 /// A type declaration, e.g. `data Bool = True | False`.
 #[derive(Debug)]
@@ -38,6 +42,8 @@ pub enum TypeDeclarationTypeI {
 /// A `data` statement, e.g. `data Bool = True | False`.
 #[derive(Debug)]
 pub struct DataI {
+    /// Where was this data statement written?
+    pub range: Range,
     /// A list of all the type constructors for a `data` statement. For example, in `data Bool = True | False`, the two
     /// type constructors are `True` and `False`.
     /// Each type constructor is a function `... -> a`, where `a` is the type in the `data` declaration, defined in this module.
@@ -75,6 +81,7 @@ pub fn index(
     let mut messages = Vec::new();
 
     let mut types = HashMap::<String, TypeDeclarationI>::new();
+    let mut type_ctors = HashMap::<String, String>::new();
     let mut symbols = HashMap::<String, SymbolI>::new();
 
     for definition in &module.definitions {
@@ -138,10 +145,13 @@ pub fn index(
                                 symbol_type: data_type.clone(),
                             };
                             vacant.insert(symbol);
+                            type_ctors
+                                .insert(type_ctor.id.name.clone(), data.identifier.name.clone());
                         }
                     }
                 }
                 let datai = DataI {
+                    range: data.identifier.range,
                     type_ctors: data
                         .type_ctors
                         .iter()
@@ -156,6 +166,10 @@ pub fn index(
         }
     }
 
-    let index = ModuleIndex { types, symbols };
+    let index = ModuleIndex {
+        types,
+        type_ctors,
+        symbols,
+    };
     DiagnosticResult::ok_with_many(index, messages)
 }

@@ -9,7 +9,7 @@ pub struct ModuleLoader {
     currently_loading: HashSet<ModulePath>,
     /// A map containing all lexed and parsed modules.
     /// If a module could not be parsed, the result here is None to show that
-    modules: HashMap<ModulePath, Option<parser::ModuleP>>,
+    modules: HashMap<ModulePath, Option<type_check::Module>>,
     error_emitter: ErrorEmitter,
 }
 

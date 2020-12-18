@@ -6,7 +6,8 @@
 //! - `brackets`
 //! - `parser`
 //! - `types` (after this step, `type_resolve` can be used)
-//! - `index`
+//! - `index` (after this step, `index_resolve` can be used)
+//! - `type_check`
 //!
 //!
 //! As a general rule, each compilation pass may only use types declared in previous passes.
@@ -37,8 +38,10 @@ use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 pub mod brackets;
 pub mod indent;
 pub mod index;
+pub mod index_resolve;
 pub mod lexer;
 pub mod parser;
+pub mod type_check;
 pub mod type_resolve;
 pub mod types;
 
@@ -118,8 +121,11 @@ impl Debug for ModulePath {
 /// A fully qualified name referring to a top-level item declared in a `.shoumei` module.
 #[derive(Clone, PartialEq, Eq)]
 pub struct QualifiedName {
+    /// The module path that the name was defined at, not the path at which the name was used.
     pub module_path: ModulePath,
+    /// The local name within the module.
     pub name: String,
+    /// The range that the name was defined at, not the range the name was used.
     pub range: Range,
 }
 
@@ -135,7 +141,7 @@ impl Debug for QualifiedName {
     }
 }
 
-pub fn parse(module_path: &ModulePath) -> DiagnosticResult<parser::ModuleP> {
+pub fn parse(module_path: &ModulePath) -> DiagnosticResult<type_check::Module> {
     // This chain of `bind`s is very similar to monadic `do` notation in Haskell.
     // file <- ...
     // lines <- ...
@@ -196,9 +202,18 @@ pub fn parse(module_path: &ModulePath) -> DiagnosticResult<parser::ModuleP> {
         .bind(|(project_types, module)| {
             let index = index::index(module_path, &module, &project_types);
             println!("{:#?}", index);
-            index.map(|index| (project_types, index, module))
+            let project_index = index.map(|index| {
+                let mut project_index = index::ProjectIndex::new();
+                project_index.insert(module_path.clone(), index);
+                project_index
+            });
+            project_index.map(|project_index| (project_types, project_index, module))
         })
         .deny()
-        .map(|(project_types, index, module)| module)
+        .bind(|(project_types, project_index, module)| {
+            // We've now computed the project types and the project index.
+            // So we can start to type check expressions and so on.
+            type_check::check(module_path, &project_types, &project_index, module)
+        })
         .deny()
 }
