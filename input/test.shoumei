@@ -4,5 +4,5 @@ def and : Bool -> Bool -> Bool
     and True True = True
     and _ True = True
     and True False = False
-    and _ _ = False
+    and _ False = False
     and _ True = False

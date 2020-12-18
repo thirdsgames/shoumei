@@ -56,6 +56,10 @@ impl<'a> PatternExhaustionCheck<'a> {
     /// all cases are covered under the combination of patterns.
     /// If anything was modified, return true.
     pub fn add(&mut self, pattern: &Pattern) -> bool {
+        if let PatternExhaustionCheck::Covered = self {
+            return false;
+        }
+        
         match pattern {
             Pattern::Named(_) => {
                 *self = PatternExhaustionCheck::Covered;
@@ -65,12 +69,16 @@ impl<'a> PatternExhaustionCheck<'a> {
                 match self {
                     PatternExhaustionCheck::TypeConstructors { decl, ctors } => {
                         // Add the type constructor to this map of type constructors.
-                        let type_ctor_exhaustion = ctors.entry(type_ctor.type_ctor.clone()).or_insert(TypeConstructorExhaustionCheck {
-                            args: Vec::new(),
-                        });
                         let mut anything_modified = false;
+                        let type_ctor_exhaustion = ctors.entry(type_ctor.type_ctor.clone()).or_insert_with(|| {
+                            anything_modified = true;
+                            TypeConstructorExhaustionCheck {
+                                args: Vec::new(),
+                            }
+                        });
                         for (arg_pattern, arg_pattern_exhaustion) in args.iter().zip(type_ctor_exhaustion.args.iter_mut()) {
-                            anything_modified |= arg_pattern_exhaustion.add(arg_pattern);
+                            // Don't short circuit this operation.
+                            anything_modified = arg_pattern_exhaustion.add(arg_pattern) || anything_modified;
                         }
                         // Check whether all type constructors are covered.
                         if let TypeDeclarationTypeI::Data(datai) = &decl.decl_type {
@@ -160,6 +168,7 @@ impl<'a> TypeChecker<'a> {
             let function_name = definition.identifier.name;
             let symbol_type = definition.symbol_type;
             let cases = definition.cases;
+            let def_range = definition.identifier.range;
 
             // Let's type check the function signature.
             let symbol_type = resolve_typep(self.module_path, &symbol_type, self.project_types);
@@ -186,6 +195,7 @@ impl<'a> TypeChecker<'a> {
                     self.check_cases_exhaustive(
                         &symbol_type,
                         cases_validated.iter().map(|(range, pat, _)| (*range, pat)).collect(),
+                        def_range,
                     )
                     .map(|_| cases_validated)
                 })
@@ -339,6 +349,7 @@ impl<'a> TypeChecker<'a> {
         &self,
         symbol_type: &Type,
         cases: Vec<(Range, &Vec<Pattern>)>,
+        def_range: Range,
     ) -> DiagnosticResult<()> {
         // Check that all cases have the same amount of arguments.
         let arg_count = cases[0].1.len();
@@ -370,15 +381,32 @@ impl<'a> TypeChecker<'a> {
             Type::Unknown(_) => PatternExhaustionCheck::Covered,
         }).collect::<Vec<_>>();
 
+        let mut messages = Vec::new();
         println!("Args: {:#?}", args_exhaustion);
         for (range, patterns) in &cases {
+            let mut anything_modified = false;
             for (exhaustion, pattern) in args_exhaustion.iter_mut().zip(patterns.iter()) {
-                exhaustion.add(pattern);
+                // Don't short circuit this operation.
+                anything_modified = exhaustion.add(pattern) || anything_modified;
             }
             println!("Args now: {:#?}", args_exhaustion);
+            if !anything_modified {
+                messages.push(ErrorMessage::new(
+                    String::from("this pattern will never be matched"),
+                    Severity::Warning,
+                    Diagnostic::at(self.module_path.clone(), *range),
+                ));
+            }
+        }
+        if args_exhaustion.iter().any(|arg_exhaustion| !matches!(arg_exhaustion, PatternExhaustionCheck::Covered)) {
+            messages.push(ErrorMessage::new(
+                String::from("the patterns in this definition are not exhaustive"),
+                Severity::Error,
+                Diagnostic::at(self.module_path.clone(), def_range),
+            ))
         }
 
-        DiagnosticResult::ok(())
+        DiagnosticResult::ok_with_many((), messages)
     }
 
     /// Converts a pattern representing a function invocation into a pattern object.
