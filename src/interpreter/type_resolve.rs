@@ -1,5 +1,7 @@
 //! Resolves an unqualified name into a fully qualified name with type information.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
 use super::{
@@ -16,6 +18,18 @@ pub enum Type {
     /// Functions with more arguments, e.g. `a -> b -> c` are represented as
     /// curried functions, e.g. `a -> (b -> c)`.
     Function(Box<Type>, Box<Type>),
+    /// An unknown type, used for intermediate values of expressions that we don't know the type of.
+    /// Create this using `new_unknown`.
+    Unknown(u64),
+}
+
+static UNKNOWN_TYPE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+impl Type {
+    /// Use this to create a new unknown type.
+    pub fn new_unknown() -> Type {
+        Type::Unknown(UNKNOWN_TYPE_COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 /// Resolves a type into a fully qualified type.

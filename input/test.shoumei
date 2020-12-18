@@ -2,4 +2,7 @@ data Bool = True | False
 
 def and : Bool -> Bool -> Bool
     and True True = True
+    and a b = a
     and _ _ = False
+    and _ = and True
+    and = and

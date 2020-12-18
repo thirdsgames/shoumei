@@ -78,6 +78,7 @@ pub struct DefinitionCaseP {
     pub replacement: ExpressionP,
 }
 
+/// Represents either an expression or a pattern.
 #[derive(Debug)]
 pub enum ExpressionP {
     /// A named variable e.g. `x` or `+`.

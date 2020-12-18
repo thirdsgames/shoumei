@@ -3,7 +3,7 @@ use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 use super::{
     index::{ProjectIndex, SymbolI, TypeDeclarationTypeI},
     parser::IdentifierP,
-    ModulePath, QualifiedName,
+    ModulePath, QualifiedName, Range,
 };
 
 /// When a type constructor is used in code, e.g. `False`.
@@ -14,6 +14,8 @@ pub struct TypeConstructorInvocation {
     pub data_type: QualifiedName,
     /// The name of the type constructor that was called.
     pub type_ctor: String,
+    /// The range where the type ctor was used in code.
+    pub range: Range,
 }
 
 /// Resolves the use of a type constructor.
@@ -34,6 +36,7 @@ pub fn resolve_type_constructor(
                         range: datai.range,
                     },
                     type_ctor: identifier.name.clone(),
+                    range: identifier.range,
                 })
             } else {
                 panic!("type constructor was for a non-data type");
