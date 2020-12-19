@@ -8,7 +8,7 @@ use super::{
 
 /// When a type constructor is used in code, e.g. `False`.
 /// For type constructor declarations, see `TypeConstructor`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeConstructorInvocation {
     /// The data type that the type constructor belongs to.
     pub data_type: QualifiedName,

@@ -1,10 +1,17 @@
 //! Performs type deduction and type checking of expressions and patterns.
 
-use std::collections::{hash_map::Entry, HashMap};
+use std::{collections::{hash_map::Entry, HashMap}, fmt::Display};
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
-use super::{ModulePath, QualifiedName, Range, index::{ModuleIndex, TypeDeclarationI, TypeDeclarationTypeI}, index_resolve::{resolve_symbol, resolve_type_constructor, TypeConstructorInvocation}, parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP}, type_resolve::{resolve_typep, Type}, types::{TypeDeclarationC, TypeDeclarationTypeC}};
+use super::{
+    index::{ModuleIndex, TypeDeclarationI, TypeDeclarationTypeI},
+    index_resolve::{resolve_symbol, resolve_type_constructor, TypeConstructorInvocation},
+    parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP},
+    type_resolve::{resolve_typep, Type},
+    types::{TypeConstructorC, TypeDeclarationC, TypeDeclarationTypeC},
+    Location, ModulePath, QualifiedName, Range,
+};
 
 /// A parsed and fully type checked module.
 /// No effort has been made to ensure semantic consistency or correctness,
@@ -12,13 +19,19 @@ use super::{ModulePath, QualifiedName, Range, index::{ModuleIndex, TypeDeclarati
 pub struct Module {}
 
 /// A pattern made up of type constructors and potential unknowns.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Pattern {
     /// A name representing the entire pattern, e.g. `a`.
     Named(IdentifierP),
     /// A type constructor, e.g. `False` or `Maybe 3`.
     TypeConstructor {
         type_ctor: TypeConstructorInvocation,
+        args: Vec<Pattern>,
+    },
+    /// A function pattern. This cannot be used directly in code,
+    /// this is created only for working with functions that have multiple patterns.
+    Function {
+        param_types: Vec<Type>,
         args: Vec<Pattern>,
     },
     /// An underscore representing an ignored pattern.
@@ -29,89 +42,330 @@ impl Pattern {
     pub fn range(&self) -> Range {
         match self {
             Pattern::Named(identifier) => identifier.range,
-            Pattern::TypeConstructor{ type_ctor, args } => args.iter().fold(type_ctor.range, |acc, i| acc.union(i.range())),
+            Pattern::TypeConstructor { type_ctor, args } => args
+                .iter()
+                .fold(type_ctor.range, |acc, i| acc.union(i.range())),
             Pattern::Unknown(range) => *range,
+            Pattern::Function { args, .. } => args
+                .iter()
+                .fold(args[0].range(), |acc, i| acc.union(i.range())),
+        }
+    }
+}
+
+impl Display for Pattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Pattern::Named(identifier) => write!(f, "{}", identifier.name),
+            Pattern::TypeConstructor { type_ctor, args } => {
+                if args.is_empty() {
+                    return write!(f, "{}", type_ctor.type_ctor);
+                }
+
+                write!(f, "({}", type_ctor.type_ctor)?;
+                for arg in args {
+                    write!(f, " {}", arg)?;
+                }
+                write!(f, ")")
+            }
+            Pattern::Function { args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
+                    if i != 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                Ok(())
+            }
+            Pattern::Unknown(_) => write!(f, "_"),
         }
     }
 }
 
 /// Used to determine whether sets of patterns are exhaustive or not.
 #[derive(Debug)]
-enum PatternExhaustionCheck<'a> {
-    /// A type constructor, e.g. `False` or `Maybe 3`.
-    TypeConstructors {
-        decl: &'a TypeDeclarationI,
-        /// If this map is ever filled with all possible type constructors,
-        /// all of which have all their arguments covered,
-        /// then this can be reduced to `Covered`.
-        ctors: HashMap<String, TypeConstructorExhaustionCheck<'a>>,
-    },
-    /// The pattern is covered and all cases have been handled.
-    Covered,
+struct PatternExhaustionCheck {
+    /// Unmatched patterns should be treated as if in file name "" at location (0, 0).
+    unmatched_patterns: Vec<Pattern>,
 }
 
-impl<'a> PatternExhaustionCheck<'a> {
-    /// Adds the given pattern to this pattern check.
-    /// This unifies the patterns, e.g. if this is `True` and `pattern` is `False`, this is reduced to `Covered` since
-    /// all cases are covered under the combination of patterns.
+impl PatternExhaustionCheck {
+    /// Adds the given pattern to this pattern check, excluding this pattern from all as yet `unmatched_patterns`.
     /// If anything was modified, return true.
-    pub fn add(&mut self, pattern: &Pattern) -> bool {
-        if let PatternExhaustionCheck::Covered = self {
-            return false;
+    pub fn add(
+        &mut self,
+        project_index: &HashMap<ModulePath, ModuleIndex>,
+        to_exclude: &Pattern,
+    ) -> bool {
+        let mut anything_modified = false;
+        for pat in std::mem::take(&mut self.unmatched_patterns) {
+            let (modified, mut new_internal_patterns) =
+                PatternExhaustionCheck::exclude_pattern(project_index, pat, to_exclude);
+            if modified {
+                anything_modified = true;
+            }
+            self.unmatched_patterns.append(&mut new_internal_patterns);
         }
-        
-        match pattern {
+        anything_modified
+    }
+
+    /// This function returns all patterns that match `pat` but do not match `to_exclude`; and returns true if some refinement to the pattern happened.
+    /// In the simplest case, when the two patterns are orthogonal, this returns `(false, vec![pat])`.
+    /// If `to_exclude` matches `pat` completely, then this returns `(true, Vec::new())`.
+    /// If `to_exclude` matches some subset of `pat`, then `true` and the complement of this subset is returned.
+    fn exclude_pattern(
+        project_index: &HashMap<ModulePath, ModuleIndex>,
+        pat: Pattern,
+        to_exclude: &Pattern,
+    ) -> (bool, Vec<Pattern>) {
+        match pat {
+            Pattern::Named(_) => (
+                true,
+                PatternExhaustionCheck::complement(project_index, to_exclude),
+            ),
+            pat @ Pattern::TypeConstructor { .. } => {
+                // If we have a type constructor e.g. `Type a b`, and we want to exclude `Type c d`,
+                // the resultant patterns are intersection(`Type a b`, complement(`Type c d`)).
+                let mut anything_changed = false;
+                let mut results = Vec::new();
+                for pat_to_exclude in PatternExhaustionCheck::complement(project_index, to_exclude)
+                {
+                    let (changed, result) = PatternExhaustionCheck::intersection(
+                        project_index,
+                        pat.clone(),
+                        pat_to_exclude,
+                    );
+                    if changed {
+                        anything_changed = true;
+                    }
+                    if let Some(result) = result {
+                        results.push(result);
+                    }
+                }
+                (anything_changed, results)
+            }
+            pat @ Pattern::Function { .. } => {
+                // If we have a function e.g. `add a b`, and we want to exclude `add c d`,
+                // the resultant patterns are intersection(`add a b`, complement(`add c d`)).
+                let mut anything_changed = false;
+                let mut results = Vec::new();
+                for pat_to_exclude in PatternExhaustionCheck::complement(project_index, to_exclude)
+                {
+                    let (changed, result) = PatternExhaustionCheck::intersection(
+                        project_index,
+                        pat.clone(),
+                        pat_to_exclude,
+                    );
+                    if changed {
+                        anything_changed = true;
+                    }
+                    if let Some(result) = result {
+                        results.push(result);
+                    }
+                }
+                (anything_changed, results)
+            }
+            Pattern::Unknown(_) => (
+                true,
+                PatternExhaustionCheck::complement(project_index, to_exclude),
+            ),
+        }
+    }
+
+    /// Returns all patterns of the same type that did not match the given pattern.
+    fn complement(project_index: &HashMap<ModulePath, ModuleIndex>, pat: &Pattern) -> Vec<Pattern> {
+        match pat {
             Pattern::Named(_) => {
-                *self = PatternExhaustionCheck::Covered;
-                true
+                // A named pattern, e.g. `a`, matches anything.
+                Vec::new()
             }
             Pattern::TypeConstructor { type_ctor, args } => {
-                match self {
-                    PatternExhaustionCheck::TypeConstructors { decl, ctors } => {
-                        // Add the type constructor to this map of type constructors.
-                        let mut anything_modified = false;
-                        let type_ctor_exhaustion = ctors.entry(type_ctor.type_ctor.clone()).or_insert_with(|| {
-                            anything_modified = true;
-                            TypeConstructorExhaustionCheck {
-                                args: Vec::new(),
-                            }
-                        });
-                        for (arg_pattern, arg_pattern_exhaustion) in args.iter().zip(type_ctor_exhaustion.args.iter_mut()) {
-                            // Don't short circuit this operation.
-                            anything_modified = arg_pattern_exhaustion.add(arg_pattern) || anything_modified;
-                        }
-                        // Check whether all type constructors are covered.
-                        if let TypeDeclarationTypeI::Data(datai) = &decl.decl_type {
-                            if datai.type_ctors.len() == ctors.len() {
-                                // All type constructors are in the list, let's check they're all covered.
-                                if ctors.iter().all(|(_, ctor_exhaustion)| ctor_exhaustion.is_covered()) {
-                                    *self = PatternExhaustionCheck::Covered;
-                                }
-                            }
+                // A type constructor, e.g. `Just 3` does not match:
+                // - `Just a` where `a` is in the complement of `3`
+                // - `a` where `a` is any other type constructor for the same type.
+                let data_type_decl = &project_index[&type_ctor.data_type.module_path].types
+                    [&type_ctor.data_type.name];
+                if let TypeDeclarationTypeI::Data(datai) = &data_type_decl.decl_type {
+                    // Loop through all of the type constructors.
+                    let mut complement = Vec::new();
+                    for type_ctor_name in &datai.type_ctors {
+                        if type_ctor_name == &type_ctor.type_ctor {
+                            // This is the type constructor we want to find the complement of.
+                            // TODO when we have data in our data types, compute the complement of this data here.
                         } else {
-                            panic!("should be a data type");
+                            // Instance a generic pattern for this type constructor.
+                            complement.push(Pattern::TypeConstructor {
+                                type_ctor: TypeConstructorInvocation {
+                                    data_type: type_ctor.data_type.clone(),
+                                    type_ctor: type_ctor_name.clone(),
+                                    range: Location { line: 0, col: 0 }.into(),
+                                },
+                                args: Vec::new(),
+                            });
                         }
-                        anything_modified
                     }
-                    PatternExhaustionCheck::Covered => false,
+                    complement
+                } else {
+                    panic!("was not data type");
                 }
             }
+            Pattern::Function { param_types, args } => {
+                // The complement of a function invocation e.g. `foo a b` is the intersection of all possible combinations of
+                // complements of a and b except for `foo a b` itself. In this example, it would be
+                // - foo comp(a) b
+                // - foo a comp(b)
+                // - foo comp(a) comp(b)
+                let complement_args = args
+                    .iter()
+                    .map(|pat| PatternExhaustionCheck::complement(project_index, pat))
+                    .collect::<Vec<_>>();
+                let mut merged =
+                    PatternExhaustionCheck::merge_with_complement(args, &complement_args);
+                merged.pop().unwrap();
+                merged
+                    .into_iter()
+                    .map(|arg_list| Pattern::Function {
+                        param_types: param_types.clone(),
+                        args: arg_list,
+                    })
+                    .collect()
+            }
             Pattern::Unknown(_) => {
-                *self = PatternExhaustionCheck::Covered;
-                true
+                // An unknown pattern, e.g. `_`, matches anything.
+                Vec::new()
             }
         }
     }
-}
 
-#[derive(Debug)]
-struct TypeConstructorExhaustionCheck<'a> {
-    args: Vec<PatternExhaustionCheck<'a>>,
-}
+    /// See `Pattern::Function` case in `complement`.
+    /// This takes every possible case of an argument and its complement.
+    /// This requires that `args.len() == complement_args.len()`.
+    /// Returns a list of all possible argument lists.
+    /// The order of the output requires that the last output list is the element with no complements, so if you
+    /// want to have a list where all elements must have a complement, then just pop a single element.
+    fn merge_with_complement(
+        args: &[Pattern],
+        complement_args: &[Vec<Pattern>],
+    ) -> Vec<Vec<Pattern>> {
+        if args.is_empty() {
+            // There is one viable argument list: the empty list.
+            vec![Vec::new()]
+        } else {
+            let mut arg_lists = Vec::new();
 
-impl TypeConstructorExhaustionCheck<'_> {
-    pub fn is_covered(&self) -> bool {
-        self.args.iter().all(|arg| matches!(arg, PatternExhaustionCheck::Covered))
+            // Let's take the last argument first (for ease of element insertion), and consider its complements.
+            let arg_lists_without_last_arg = PatternExhaustionCheck::merge_with_complement(
+                &args[0..args.len() - 1],
+                &complement_args[0..complement_args.len() - 1],
+            );
+            for complement_arg in &complement_args[complement_args.len() - 1] {
+                for list in &arg_lists_without_last_arg {
+                    let mut new_list = list.clone();
+                    new_list.push(complement_arg.clone());
+                    arg_lists.push(new_list);
+                }
+            }
+            // Now let's add the normal arg without complement.
+            for mut new_list in arg_lists_without_last_arg {
+                new_list.push(args[args.len() - 1].clone());
+                arg_lists.push(new_list);
+            }
+
+            arg_lists
+        }
+    }
+
+    /// Returns the pattern that matched both patterns, if such a pattern existed.
+    /// Returns false if no pattern deduction occured (i.e., if we return pat1).
+    fn intersection(
+        project_index: &HashMap<ModulePath, ModuleIndex>,
+        pat1: Pattern,
+        pat2: Pattern,
+    ) -> (bool, Option<Pattern>) {
+        match pat1 {
+            Pattern::Named(_) => {
+                // A named pattern matches anything, so return just pat2.
+                // If pat2 is `Named` or `Unknown`, no deduction occured.
+                (!matches!(pat2, Pattern::Named(_) | Pattern::Unknown(_)), Some(pat2))
+            }
+            Pattern::TypeConstructor {
+                type_ctor: type_ctor1,
+                args: args1,
+            } => {
+                match pat2 {
+                    Pattern::TypeConstructor {
+                        type_ctor: type_ctor2,
+                        args: args2,
+                    } => {
+                        if type_ctor1.type_ctor == type_ctor2.type_ctor {
+                            // If the type constructors are the same, the intersection is just the intersection of their args.
+                            let mut anything_modified = false;
+                            let mut args = Vec::new();
+                            for (arg1, arg2) in args1.into_iter().zip(args2) {
+                                let (modified, new_arg) =
+                                    PatternExhaustionCheck::intersection(project_index, arg1, arg2);
+                                if modified {
+                                    anything_modified = true;
+                                }
+                                match new_arg {
+                                    Some(new_arg) => args.push(new_arg),
+                                    // If None, no intersection was found between the arguments, so there is no intersection between the main patterns.
+                                    None => return (true, None),
+                                }
+                            }
+                            (
+                                anything_modified,
+                                Some(Pattern::TypeConstructor {
+                                    type_ctor: type_ctor1,
+                                    args,
+                                }),
+                            )
+                        } else {
+                            // If the type constructors are different, the intersection is empty.
+                            (true, None)
+                        }
+                    },
+                    Pattern::Named(_) | Pattern::Unknown(_) => (false, Some(Pattern::TypeConstructor {
+                        type_ctor: type_ctor1,
+                        args: args1,
+                    })),
+                    _ => panic!("was not type constructor {:#?}", pat2),
+                }
+            }
+            Pattern::Function { param_types, args: args1 } => {
+                if let Pattern::Function { args: args2, .. } = pat2 {
+                    // The intersection is just the intersection of the functions' arguments.
+                    let mut anything_modified = false;
+                    let mut args = Vec::new();
+                    for (arg1, arg2) in args1.into_iter().zip(args2) {
+                        let (modified, new_arg) =
+                            PatternExhaustionCheck::intersection(project_index, arg1, arg2);
+                        if modified {
+                            anything_modified = true;
+                        }
+                        match new_arg {
+                            Some(new_arg) => args.push(new_arg),
+                            // If None, no intersection was found between the arguments, so there is no intersection between the main patterns.
+                            None => return (true, None),
+                        }
+                    }
+                    (
+                        anything_modified,
+                        Some(Pattern::Function {
+                            param_types,
+                            args,
+                        }),
+                    )
+                } else {
+                    panic!("was not function")
+                }
+            }
+            Pattern::Unknown(_) => {
+                // An unknown pattern matches anything, so return just pat2.
+                // If pat2 is `Named` or `Unknown`, no deduction occured.
+                (!matches!(pat2, Pattern::Named(_) | Pattern::Unknown(_)), Some(pat2))
+            }
+        }
     }
 }
 
@@ -165,10 +419,9 @@ enum ExpressionContents {
 impl<'a> TypeChecker<'a> {
     fn compute(mut self, module: ModuleP) -> DiagnosticResult<Module> {
         for definition in module.definitions {
-            let function_name = definition.identifier.name;
             let symbol_type = definition.symbol_type;
             let cases = definition.cases;
-            let def_range = definition.identifier.range;
+            let def_ident = definition.identifier;
 
             // Let's type check the function signature.
             let symbol_type = resolve_typep(self.module_path, &symbol_type, self.project_types);
@@ -177,7 +430,7 @@ impl<'a> TypeChecker<'a> {
                 // Let's resolve each case's patterns and expressions.
                 let cases = cases
                     .into_iter()
-                    .map(|case| self.resolve_case(&function_name, case))
+                    .map(|case| self.resolve_case(&def_ident.name, case))
                     .collect::<DiagnosticResult<_>>();
 
                 // Now we can check whether the patterns are valid.
@@ -194,8 +447,11 @@ impl<'a> TypeChecker<'a> {
                 cases_validated.bind(|cases_validated| {
                     self.check_cases_exhaustive(
                         &symbol_type,
-                        cases_validated.iter().map(|(range, pat, _)| (*range, pat)).collect(),
-                        def_range,
+                        cases_validated
+                            .iter()
+                            .map(|(range, pat, _)| (*range, pat))
+                            .collect(),
+                        &def_ident,
                     )
                     .map(|_| cases_validated)
                 })
@@ -249,11 +505,17 @@ impl<'a> TypeChecker<'a> {
             bound_variables.bind(|bound| collect_bound_vars(self.module_path, bound));
 
         // Now, parse the expression, now that we know the input variable types.
-        bound_variables.bind(|bound_variables| self.parse_expr(&bound_variables, replacement)).map(|expr| (range, args, expr))
+        bound_variables
+            .bind(|bound_variables| self.parse_expr(&bound_variables, replacement))
+            .map(|expr| (range, args, expr))
     }
 
     /// Type checks an expression, assigning new type variables to each sub-expression.
-    fn parse_expr(&self, bound_variables: &HashMap<String, BoundVariable>, expr: ExpressionP) -> DiagnosticResult<Expression> {
+    fn parse_expr(
+        &self,
+        bound_variables: &HashMap<String, BoundVariable>,
+        expr: ExpressionP,
+    ) -> DiagnosticResult<Expression> {
         match expr {
             ExpressionP::Variable(identifier) => match bound_variables.get(&identifier.name) {
                 // Let's try to work out what this identifier is referring to.
@@ -264,7 +526,10 @@ impl<'a> TypeChecker<'a> {
                 }),
                 None => {
                     // Now let's look for a symbol in scope.
-                    match resolve_symbol(self.module_path, &identifier, self.project_index).destructure().0 {
+                    match resolve_symbol(self.module_path, &identifier, self.project_index)
+                        .destructure()
+                        .0
+                    {
                         Some((symbol_module_path, symbol)) => DiagnosticResult::ok(Expression {
                             ty: symbol.symbol_type.clone(),
                             contents: ExpressionContents::Symbol(QualifiedName {
@@ -281,13 +546,16 @@ impl<'a> TypeChecker<'a> {
                         )),
                     }
                 }
-            }
-            ExpressionP::Apply(left, right) => {
-                self.parse_expr(bound_variables, *left).bind(|left| self.parse_expr(bound_variables, *right).map(|right| Expression {
-                    ty: Type::new_unknown(),
-                    contents: ExpressionContents::Apply(Box::new(left), Box::new(right))
-                }))
             },
+            ExpressionP::Apply(left, right) => {
+                self.parse_expr(bound_variables, *left).bind(|left| {
+                    self.parse_expr(bound_variables, *right)
+                        .map(|right| Expression {
+                            ty: Type::new_unknown(),
+                            contents: ExpressionContents::Apply(Box::new(left), Box::new(right)),
+                        })
+                })
+            }
             ExpressionP::Unknown(range) => DiagnosticResult::fail(ErrorMessage::new(
                 String::from("underscore not allowed in expressions"),
                 Severity::Error,
@@ -318,7 +586,8 @@ impl<'a> TypeChecker<'a> {
             Pattern::TypeConstructor { type_ctor, args } => match expected_type {
                 Type::Named(expected_name) => {
                     if type_ctor.data_type == expected_name {
-                        let data_decl = &self.project_types[&expected_name.module_path][&expected_name.name];
+                        let data_decl =
+                            &self.project_types[&expected_name.module_path][&expected_name.name];
                         if let TypeDeclarationTypeC::Data(data) = &data_decl.decl_type {
                             // TODO when we have type constructors that take variables, we need to add behaviour here.
                             //collect_bound_vars(self.module_path, args.iter().map(|arg| self.match_and_bind(pattern, expected_type)))
@@ -339,9 +608,10 @@ impl<'a> TypeChecker<'a> {
                     Severity::Error,
                     Diagnostic::at(self.module_path.clone(), type_ctor.range),
                 )),
-                Type::Unknown(_) => panic!("expected type must be known")
+                Type::Unknown(_) => panic!("expected type must be known"),
             },
             Pattern::Unknown(_) => DiagnosticResult::ok(HashMap::new()),
+            Pattern::Function { .. } => unimplemented!(),
         }
     }
 
@@ -349,46 +619,53 @@ impl<'a> TypeChecker<'a> {
         &self,
         symbol_type: &Type,
         cases: Vec<(Range, &Vec<Pattern>)>,
-        def_range: Range,
+        def_ident: &IdentifierP,
     ) -> DiagnosticResult<()> {
         // Check that all cases have the same amount of arguments.
         let arg_count = cases[0].1.len();
-        let mismatched_cases = cases.iter().filter(|(_, args)| args.len() != arg_count).collect::<Vec<_>>();
+        let mismatched_cases = cases
+            .iter()
+            .filter(|(_, args)| args.len() != arg_count)
+            .collect::<Vec<_>>();
         if !mismatched_cases.is_empty() {
-            let error_messages = mismatched_cases.into_iter().map(|(case_range, _)| {
-                ErrorMessage::new_with(
-                    String::from("patterns had different amounts of arguments"),
-                    Severity::Error,
-                    Diagnostic::at(self.module_path.clone(), *case_range),
-                    HelpMessage {
-                        message: format!("expected {} to match first pattern", arg_count),
-                        help_type: HelpType::Note,
-                        diagnostic: Diagnostic::at(self.module_path.clone(), cases[0].0),
-                    }
-                )
-            }).collect::<Vec<_>>();
+            let error_messages = mismatched_cases
+                .into_iter()
+                .map(|(case_range, _)| {
+                    ErrorMessage::new_with(
+                        String::from("patterns had different amounts of arguments"),
+                        Severity::Error,
+                        Diagnostic::at(self.module_path.clone(), *case_range),
+                        HelpMessage {
+                            message: format!("expected {} to match first pattern", arg_count),
+                            help_type: HelpType::Note,
+                            diagnostic: Diagnostic::at(self.module_path.clone(), cases[0].0),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
             return DiagnosticResult::fail_many(error_messages);
         }
 
         // Now, let's begin gradually refining the patterns for each argument until exhaustion is determined.
         let (symbol_args, _) = get_args_of_type_arity(symbol_type, arg_count);
-        let mut args_exhaustion = symbol_args.into_iter().map(|arg| match arg {
-            Type::Named(qualified_name) => PatternExhaustionCheck::TypeConstructors {
-                decl: &self.project_index[&qualified_name.module_path].types[&qualified_name.name],
-                ctors: HashMap::new(),
-            },
-            Type::Function(_, _) => PatternExhaustionCheck::Covered,
-            Type::Unknown(_) => PatternExhaustionCheck::Covered,
-        }).collect::<Vec<_>>();
+        let mut args_exhaustion = PatternExhaustionCheck {
+            unmatched_patterns: vec![Pattern::Function {
+                param_types: symbol_args.clone(),
+                args: (0..arg_count)
+                    .map(|_| Pattern::Unknown(Location { line: 0, col: 0 }.into()))
+                    .collect(),
+            }],
+        };
 
         let mut messages = Vec::new();
         println!("Args: {:#?}", args_exhaustion);
         for (range, patterns) in &cases {
-            let mut anything_modified = false;
-            for (exhaustion, pattern) in args_exhaustion.iter_mut().zip(patterns.iter()) {
-                // Don't short circuit this operation.
-                anything_modified = exhaustion.add(pattern) || anything_modified;
-            }
+            let pattern = Pattern::Function {
+                param_types: symbol_args.clone(),
+                args: (*patterns).clone(),
+            };
+            println!("Adding: {:#?}", pattern);
+            let anything_modified = args_exhaustion.add(self.project_index, &pattern);
             println!("Args now: {:#?}", args_exhaustion);
             if !anything_modified {
                 messages.push(ErrorMessage::new(
@@ -398,11 +675,15 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
         }
-        if args_exhaustion.iter().any(|arg_exhaustion| !matches!(arg_exhaustion, PatternExhaustionCheck::Covered)) {
+        if !args_exhaustion.unmatched_patterns.is_empty() {
+            let mut message = String::from("the patterns in this definition are not exhaustive\nunmatched patterns:");
+            for pat in args_exhaustion.unmatched_patterns {
+                message += &format!("\n    {} {}", def_ident.name, pat);
+            }
             messages.push(ErrorMessage::new(
-                String::from("the patterns in this definition are not exhaustive"),
+                message,
                 Severity::Error,
-                Diagnostic::at(self.module_path.clone(), def_range),
+                Diagnostic::at(self.module_path.clone(), def_ident.range),
             ))
         }
 
@@ -478,7 +759,10 @@ impl<'a> TypeChecker<'a> {
                         .destructure()
                         .0;
                 match type_ctor {
-                    Some(type_ctor) => DiagnosticResult::ok(Pattern::TypeConstructor { type_ctor, args: Vec::new() }),
+                    Some(type_ctor) => DiagnosticResult::ok(Pattern::TypeConstructor {
+                        type_ctor,
+                        args: Vec::new(),
+                    }),
                     None => {
                         // It was not a type constructor, so it must just be a variable name.
                         DiagnosticResult::ok(Pattern::Named(identifier))
@@ -486,20 +770,20 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             ExpressionP::Apply(left, right) => self.resolve_type_pattern(*left).bind(|left| {
-                self.resolve_type_pattern(*right)
-                    .bind(|right| {
-                        match left {
-                            Pattern::TypeConstructor { type_ctor, mut args } => {
-                                args.push(right);
-                                DiagnosticResult::ok(Pattern::TypeConstructor { type_ctor, args })
-                            }
-                            _ => DiagnosticResult::fail(ErrorMessage::new(
-                                String::from("expected a type constructor on the left of this application"),
-                                Severity::Error,
-                                Diagnostic::at(self.module_path.clone(), left.range())
-                            ))
-                        }
-                    })
+                self.resolve_type_pattern(*right).bind(|right| match left {
+                    Pattern::TypeConstructor {
+                        type_ctor,
+                        mut args,
+                    } => {
+                        args.push(right);
+                        DiagnosticResult::ok(Pattern::TypeConstructor { type_ctor, args })
+                    }
+                    _ => DiagnosticResult::fail(ErrorMessage::new(
+                        String::from("expected a type constructor on the left of this application"),
+                        Severity::Error,
+                        Diagnostic::at(self.module_path.clone(), left.range()),
+                    )),
+                })
             }),
             ExpressionP::Unknown(range) => DiagnosticResult::ok(Pattern::Unknown(range)),
         }
@@ -548,7 +832,7 @@ fn get_args_of_type(symbol_type: &Type) -> (Vec<Type>, Type) {
             args.insert(0, *left.clone());
             (args, out)
         }
-        Type::Unknown(_) => panic!("type must be known")
+        Type::Unknown(_) => panic!("type must be known"),
     }
 }
 

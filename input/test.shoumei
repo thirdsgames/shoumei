@@ -6,3 +6,6 @@ def and : Bool -> Bool -> Bool
     and True False = False
     and _ False = False
     and _ True = False
+
+def big : Bool -> Bool -> Bool -> Bool -> Bool
+    big True True True True = False
