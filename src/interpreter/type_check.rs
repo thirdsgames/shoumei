@@ -166,7 +166,9 @@ impl PatternExhaustionCheck {
                         results.push(result);
                     }
                 }
-                (anything_changed, results)
+                // If the results list is empty, then there was a change - namely, there was no complement,
+                // and therefore there is no intersection.
+                (anything_changed || results.is_empty(), results)
             }
             Pattern::Unknown(_) => (
                 true,
@@ -236,6 +238,7 @@ impl PatternExhaustionCheck {
     /// See `Pattern::Function` case in `complement`.
     /// This takes every possible case of an argument and its complement, excluding the case without any complements.
     /// Returns a list of all possible argument lists.
+    /// The complement of `True True True` returned by this function is `False _ _`, `True False _`, `True True False`.
     fn complement_args(project_index: &ProjectIndex, args: &[Pattern]) -> Vec<Vec<Pattern>> {
         let mut complements = Vec::new();
         for i in 0..args.len() {
@@ -254,33 +257,6 @@ impl PatternExhaustionCheck {
             }
         }
         complements
-
-        // if args.is_empty() {
-        //     // There is one viable argument list: the empty list.
-        //     vec![Vec::new()]
-        // } else {
-        //     let mut arg_lists = Vec::new();
-
-        //     // Let's take the last argument first (for ease of element insertion), and consider its complements.
-        //     let arg_lists_without_last_arg = PatternExhaustionCheck::merge_with_complement(
-        //         &args[0..args.len() - 1],
-        //         &complement_args[0..complement_args.len() - 1],
-        //     );
-        //     for complement_arg in &complement_args[complement_args.len() - 1] {
-        //         for list in &arg_lists_without_last_arg {
-        //             let mut new_list = list.clone();
-        //             new_list.push(complement_arg.clone());
-        //             arg_lists.push(new_list);
-        //         }
-        //     }
-        //     // Now let's add the normal arg without complement.
-        //     for mut new_list in arg_lists_without_last_arg {
-        //         new_list.push(args[args.len() - 1].clone());
-        //         arg_lists.push(new_list);
-        //     }
-
-        //     arg_lists
-        // }
     }
 
     /// Returns the pattern that matched both patterns, if such a pattern existed.
@@ -459,7 +435,6 @@ impl<'a> TypeChecker<'a> {
                         })
                         .collect::<DiagnosticResult<_>>()
                 });
-                println!("Cases: {:#?}", cases_validated);
                 // Check that the patterns we have generated are exhaustive.
                 cases_validated.bind(|cases_validated| {
                     self.check_cases_exhaustive(
@@ -499,7 +474,7 @@ impl<'a> TypeChecker<'a> {
         args: Vec<Pattern>,
         replacement: ExpressionP,
     ) -> DiagnosticResult<(Range, Vec<Pattern>, Expression)> {
-        let (symbol_args, result) = get_args_of_type(symbol_type);
+        let (symbol_args, _) = get_args_of_type(symbol_type);
         // The types in `args` must match the first `args.len()` types in symbol_args.
         if args.len() > symbol_args.len() {
             return DiagnosticResult::fail(ErrorMessage::new(
@@ -675,15 +650,12 @@ impl<'a> TypeChecker<'a> {
         };
 
         let mut messages = Vec::new();
-        println!("Args: {:#?}", args_exhaustion);
         for (range, patterns) in &cases {
             let pattern = Pattern::Function {
                 param_types: symbol_args.clone(),
                 args: (*patterns).clone(),
             };
-            println!("Adding: {:#?}", pattern);
             let anything_modified = args_exhaustion.add(self.project_index, &pattern);
-            println!("Args now: {:#?}", args_exhaustion);
             if !anything_modified {
                 messages.push(ErrorMessage::new(
                     String::from("this pattern will never be matched"),
