@@ -35,6 +35,10 @@ impl ModuleLoader {
         self.currently_loading.insert(module_path.clone());
 
         let module = self.error_emitter.consume_diagnostic(parse(&module_path));
+        if let Some(module) = &module {
+            println!("Parsed module.");
+            println!("{}", module);
+        }
 
         self.currently_loading.remove(&module_path);
         self.modules.insert(module_path, module);

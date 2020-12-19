@@ -188,9 +188,7 @@ pub fn parse(module_path: &ModulePath) -> DiagnosticResult<type_check::Module> {
         .bind(|token_block| parser::parse(module_path, token_block))
         .deny()
         .bind(|module| {
-            println!("{:#?}", module);
             let types = types::compute_types(module_path, &module);
-            println!("{:#?}", types);
             let project_types = types.map(|types| {
                 let mut project_types = types::ProjectTypesC::new();
                 project_types.insert(module_path.clone(), types);
@@ -201,7 +199,6 @@ pub fn parse(module_path: &ModulePath) -> DiagnosticResult<type_check::Module> {
         .deny()
         .bind(|(project_types, module)| {
             let index = index::index(module_path, &module, &project_types);
-            println!("{:#?}", index);
             let project_index = index.map(|index| {
                 let mut project_index = index::ProjectIndex::new();
                 project_index.insert(module_path.clone(), index);

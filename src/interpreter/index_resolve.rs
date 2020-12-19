@@ -57,7 +57,6 @@ pub fn resolve_symbol<'a>(
     project_index: &'a ProjectIndex,
 ) -> DiagnosticResult<(&'a ModulePath, &'a SymbolI)> {
     // We don't have `import`-style statements yet, so let's just only search for types in the current module path.
-    let key = project_index.get_key_value(module_path);
     if let Some((module_path_long_lifetime, module_index)) =
         project_index.get_key_value(module_path)
     {

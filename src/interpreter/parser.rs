@@ -424,7 +424,7 @@ where
     }
 }
 
-/// `type ::= type_name ("->" type)?`
+/// `type ::= (type_name | "(" type ")") ("->" type)?`
 #[rustfmt::skip] // rustfmt messes up the `matches!` invocation, and makes it so clippy raises a warning
 fn parse_type<I>(
     module_path: &ModulePath,
@@ -434,19 +434,39 @@ fn parse_type<I>(
 where
     I: Iterator<Item = TokenTree>,
 {
-    parse_identifier_with_message(module_path, line, end_of_line, "expected type name").bind(
-        |type_name| {
-            let parsed_type = TypeP::Named(type_name);
-            if peek_token(line, |token| matches!(token.token_type, TokenType::Arrow)) {
-                // Consume the `->` token.
-                line.next();
-                parse_type(module_path, line, end_of_line)
-                    .map(|rhs_type| TypeP::Function(Box::new(parsed_type), Box::new(rhs_type)))
+    let initial_type = match line.peek() {
+        Some(TokenTree::Tree { .. }) => {
+            if let TokenTree::Tree { tokens, close, .. } = line.next().unwrap() {
+                let mut token_iter = tokens.into_iter().peekable();
+                let ty = parse_type(module_path, &mut token_iter, close.start);
+                if let Some(t) = token_iter.peek() {
+                    ty.with(ErrorMessage::new(
+                        String::from("unexpected extra tokens after end of type"),
+                        Severity::Error,
+                        Diagnostic::at(module_path.clone(), t.range()),
+                    ))
+                } else {
+                    ty
+                }
             } else {
-                DiagnosticResult::ok(parsed_type)
+                unreachable!()
             }
-        },
-    )
+        }
+        _ => {
+            parse_identifier_with_message(module_path, line, end_of_line, "expected type name").map(TypeP::Named)
+        }
+    };
+
+    initial_type.bind(|parsed_type| {
+        if peek_token(line, |token| matches!(token.token_type, TokenType::Arrow)) {
+            // Consume the `->` token.
+            line.next();
+            parse_type(module_path, line, end_of_line)
+                .map(|rhs_type| TypeP::Function(Box::new(parsed_type), Box::new(rhs_type)))
+        } else {
+            DiagnosticResult::ok(parsed_type)
+        }
+    })
 }
 
 fn parse_identifier(

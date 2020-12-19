@@ -1,6 +1,9 @@
 //! Resolves an unqualified name into a fully qualified name with type information.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    fmt::Display,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
@@ -29,6 +32,36 @@ impl Type {
     /// Use this to create a new unknown type.
     pub fn new_unknown() -> Type {
         Type::Unknown(UNKNOWN_TYPE_COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// If `parenthesise` is true, functions should be parenthesised.
+    pub fn fmt_proper(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        parenthesise: bool,
+    ) -> std::fmt::Result {
+        match self {
+            Type::Named(name) => write!(f, "{}", name.name),
+            Type::Function(left, right) => {
+                if parenthesise {
+                    write!(f, "(")?;
+                }
+                left.fmt_proper(f, true)?;
+                write!(f, " -> ")?;
+                right.fmt_proper(f, false)?;
+                if parenthesise {
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            Type::Unknown(_) => write!(f, "_"),
+        }
+    }
+}
+
+impl Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_proper(f, false)
     }
 }
 

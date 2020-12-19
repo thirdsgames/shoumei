@@ -19,7 +19,34 @@ use super::{
 /// A parsed and fully type checked module.
 /// No effort has been made to ensure semantic consistency or correctness,
 /// just syntactic and type correctness.
-pub struct Module {}
+#[derive(Debug)]
+pub struct Module {
+    pub definitions: HashMap<String, Definition>,
+}
+
+impl Display for Module {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Definitions:")?;
+        for (def_name, def) in &self.definitions {
+            writeln!(f, "  {} : {}", def_name, def.symbol_type)?;
+        }
+        Ok(())
+    }
+}
+
+/// A definition for a symbol, i.e. a function or constant.
+#[derive(Debug)]
+pub struct Definition {
+    symbol_type: Type,
+    cases: Vec<DefinitionCase>,
+}
+
+#[derive(Debug)]
+pub struct DefinitionCase {
+    range: Range,
+    arg_patterns: Vec<Pattern>,
+    replacement: Expression,
+}
 
 /// A pattern made up of type constructors and potential unknowns.
 #[derive(Debug, Clone)]
@@ -411,6 +438,8 @@ enum ExpressionContents {
 
 impl<'a> TypeChecker<'a> {
     fn compute(mut self, module: ModuleP) -> DiagnosticResult<Module> {
+        let mut definitions = HashMap::<String, Definition>::new();
+
         for definition in module.definitions {
             let symbol_type = definition.symbol_type;
             let cases = definition.cases;
@@ -445,14 +474,30 @@ impl<'a> TypeChecker<'a> {
                             .collect(),
                         &def_ident,
                     )
-                    .map(|_| cases_validated)
+                    .map(|_| (symbol_type, cases_validated))
                 })
             });
-            let (_, mut inner_messages) = validated.destructure();
+            let (definition_parsed, mut inner_messages) = validated.destructure();
             self.messages.append(&mut inner_messages);
+            if let Some((symbol_type, cases)) = definition_parsed {
+                definitions.insert(
+                    def_ident.name,
+                    Definition {
+                        symbol_type,
+                        cases: cases
+                            .into_iter()
+                            .map(|(range, arg_patterns, replacement)| DefinitionCase {
+                                range,
+                                arg_patterns,
+                                replacement,
+                            })
+                            .collect(),
+                    },
+                );
+            }
         }
 
-        DiagnosticResult::ok_with_many(Module {}, self.messages)
+        DiagnosticResult::ok_with_many(Module { definitions }, self.messages)
     }
 
     fn resolve_case(
