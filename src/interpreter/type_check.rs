@@ -4,14 +4,7 @@ use std::{collections::{hash_map::Entry, HashMap}, fmt::Display};
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
-use super::{
-    index::{ModuleIndex, TypeDeclarationI, TypeDeclarationTypeI},
-    index_resolve::{resolve_symbol, resolve_type_constructor, TypeConstructorInvocation},
-    parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP},
-    type_resolve::{resolve_typep, Type},
-    types::{TypeConstructorC, TypeDeclarationC, TypeDeclarationTypeC},
-    Location, ModulePath, QualifiedName, Range,
-};
+use super::{Location, ModulePath, QualifiedName, Range, index::{ModuleIndex, ProjectIndex, TypeDeclarationI, TypeDeclarationTypeI}, index_resolve::{resolve_symbol, resolve_type_constructor, TypeConstructorInvocation}, parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP}, type_resolve::{resolve_typep, Type}, types::{TypeConstructorC, TypeDeclarationC, TypeDeclarationTypeC}};
 
 /// A parsed and fully type checked module.
 /// No effort has been made to ensure semantic consistency or correctness,
@@ -210,19 +203,12 @@ impl PatternExhaustionCheck {
                 }
             }
             Pattern::Function { param_types, args } => {
-                // The complement of a function invocation e.g. `foo a b` is the intersection of all possible combinations of
-                // complements of a and b except for `foo a b` itself. In this example, it would be
-                // - foo comp(a) b
-                // - foo a comp(b)
-                // - foo comp(a) comp(b)
-                let complement_args = args
-                    .iter()
-                    .map(|pat| PatternExhaustionCheck::complement(project_index, pat))
-                    .collect::<Vec<_>>();
-                let mut merged =
-                    PatternExhaustionCheck::merge_with_complement(args, &complement_args);
-                merged.pop().unwrap();
-                merged
+                // The complement of a function invocation e.g. `foo a b c` is the intersection of all possible combinations of
+                // complements of a, b and c except for `foo a b c` itself. In this example, it would be
+                // - foo comp(a) _ _
+                // - foo a comp(b) _
+                // - foo a b comp(c)
+                PatternExhaustionCheck::complement_args(project_index, args)
                     .into_iter()
                     .map(|arg_list| Pattern::Function {
                         param_types: param_types.clone(),
@@ -238,41 +224,56 @@ impl PatternExhaustionCheck {
     }
 
     /// See `Pattern::Function` case in `complement`.
-    /// This takes every possible case of an argument and its complement.
-    /// This requires that `args.len() == complement_args.len()`.
+    /// This takes every possible case of an argument and its complement, excluding the case without any complements.
     /// Returns a list of all possible argument lists.
-    /// The order of the output requires that the last output list is the element with no complements, so if you
-    /// want to have a list where all elements must have a complement, then just pop a single element.
-    fn merge_with_complement(
-        args: &[Pattern],
-        complement_args: &[Vec<Pattern>],
+    fn complement_args(
+        project_index: &ProjectIndex,
+        args: &[Pattern]
     ) -> Vec<Vec<Pattern>> {
-        if args.is_empty() {
-            // There is one viable argument list: the empty list.
-            vec![Vec::new()]
-        } else {
-            let mut arg_lists = Vec::new();
-
-            // Let's take the last argument first (for ease of element insertion), and consider its complements.
-            let arg_lists_without_last_arg = PatternExhaustionCheck::merge_with_complement(
-                &args[0..args.len() - 1],
-                &complement_args[0..complement_args.len() - 1],
-            );
-            for complement_arg in &complement_args[complement_args.len() - 1] {
-                for list in &arg_lists_without_last_arg {
-                    let mut new_list = list.clone();
-                    new_list.push(complement_arg.clone());
-                    arg_lists.push(new_list);
+        let mut complements = Vec::new();
+        for i in 0..args.len() {
+            // This argument will become its complement.
+            // Prior arguments are cloned, and future arguments are ignored.
+            for complement in PatternExhaustionCheck::complement(project_index, &args[i]) {
+                let mut new_args = Vec::new();
+                for arg in &args[0..i] {
+                    new_args.push(arg.clone());
                 }
+                new_args.push(complement);
+                for _ in (i+1)..args.len() {
+                    new_args.push(Pattern::Unknown(Location { line: 0, col: 0 }.into()));
+                }
+                complements.push(new_args);
             }
-            // Now let's add the normal arg without complement.
-            for mut new_list in arg_lists_without_last_arg {
-                new_list.push(args[args.len() - 1].clone());
-                arg_lists.push(new_list);
-            }
-
-            arg_lists
         }
+        complements
+
+        // if args.is_empty() {
+        //     // There is one viable argument list: the empty list.
+        //     vec![Vec::new()]
+        // } else {
+        //     let mut arg_lists = Vec::new();
+
+        //     // Let's take the last argument first (for ease of element insertion), and consider its complements.
+        //     let arg_lists_without_last_arg = PatternExhaustionCheck::merge_with_complement(
+        //         &args[0..args.len() - 1],
+        //         &complement_args[0..complement_args.len() - 1],
+        //     );
+        //     for complement_arg in &complement_args[complement_args.len() - 1] {
+        //         for list in &arg_lists_without_last_arg {
+        //             let mut new_list = list.clone();
+        //             new_list.push(complement_arg.clone());
+        //             arg_lists.push(new_list);
+        //         }
+        //     }
+        //     // Now let's add the normal arg without complement.
+        //     for mut new_list in arg_lists_without_last_arg {
+        //         new_list.push(args[args.len() - 1].clone());
+        //         arg_lists.push(new_list);
+        //     }
+
+        //     arg_lists
+        // }
     }
 
     /// Returns the pattern that matched both patterns, if such a pattern existed.
