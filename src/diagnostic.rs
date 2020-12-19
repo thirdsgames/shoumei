@@ -387,7 +387,8 @@ impl ErrorEmitter {
 
         if let Some(range) = diagnostic.range {
             // We calculate the amount of digits in the line number.
-            let line_number_max_digits = range.start.line.max(range.end.line).to_string().len();
+            let line_number_max_digits =
+                (range.start.line.max(range.end.line) + 1).to_string().len();
 
             println!(
                 "{}{} {} @ {}:{}",

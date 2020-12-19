@@ -1,10 +1,20 @@
 //! Performs type deduction and type checking of expressions and patterns.
 
-use std::{collections::{hash_map::Entry, HashMap}, fmt::Display};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    fmt::Display,
+};
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
-use super::{Location, ModulePath, QualifiedName, Range, index::{ModuleIndex, ProjectIndex, TypeDeclarationI, TypeDeclarationTypeI}, index_resolve::{resolve_symbol, resolve_type_constructor, TypeConstructorInvocation}, parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP}, type_resolve::{resolve_typep, Type}, types::{TypeConstructorC, TypeDeclarationC, TypeDeclarationTypeC}};
+use super::{
+    index::{ModuleIndex, ProjectIndex, TypeDeclarationTypeI},
+    index_resolve::{resolve_symbol, resolve_type_constructor, TypeConstructorInvocation},
+    parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP},
+    type_resolve::{resolve_typep, Type},
+    types::{TypeDeclarationC, TypeDeclarationTypeC},
+    Location, ModulePath, QualifiedName, Range,
+};
 
 /// A parsed and fully type checked module.
 /// No effort has been made to ensure semantic consistency or correctness,
@@ -226,10 +236,7 @@ impl PatternExhaustionCheck {
     /// See `Pattern::Function` case in `complement`.
     /// This takes every possible case of an argument and its complement, excluding the case without any complements.
     /// Returns a list of all possible argument lists.
-    fn complement_args(
-        project_index: &ProjectIndex,
-        args: &[Pattern]
-    ) -> Vec<Vec<Pattern>> {
+    fn complement_args(project_index: &ProjectIndex, args: &[Pattern]) -> Vec<Vec<Pattern>> {
         let mut complements = Vec::new();
         for i in 0..args.len() {
             // This argument will become its complement.
@@ -240,7 +247,7 @@ impl PatternExhaustionCheck {
                     new_args.push(arg.clone());
                 }
                 new_args.push(complement);
-                for _ in (i+1)..args.len() {
+                for _ in (i + 1)..args.len() {
                     new_args.push(Pattern::Unknown(Location { line: 0, col: 0 }.into()));
                 }
                 complements.push(new_args);
@@ -287,7 +294,10 @@ impl PatternExhaustionCheck {
             Pattern::Named(_) => {
                 // A named pattern matches anything, so return just pat2.
                 // If pat2 is `Named` or `Unknown`, no deduction occured.
-                (!matches!(pat2, Pattern::Named(_) | Pattern::Unknown(_)), Some(pat2))
+                (
+                    !matches!(pat2, Pattern::Named(_) | Pattern::Unknown(_)),
+                    Some(pat2),
+                )
             }
             Pattern::TypeConstructor {
                 type_ctor: type_ctor1,
@@ -325,15 +335,21 @@ impl PatternExhaustionCheck {
                             // If the type constructors are different, the intersection is empty.
                             (true, None)
                         }
-                    },
-                    Pattern::Named(_) | Pattern::Unknown(_) => (false, Some(Pattern::TypeConstructor {
-                        type_ctor: type_ctor1,
-                        args: args1,
-                    })),
+                    }
+                    Pattern::Named(_) | Pattern::Unknown(_) => (
+                        false,
+                        Some(Pattern::TypeConstructor {
+                            type_ctor: type_ctor1,
+                            args: args1,
+                        }),
+                    ),
                     _ => panic!("was not type constructor {:#?}", pat2),
                 }
             }
-            Pattern::Function { param_types, args: args1 } => {
+            Pattern::Function {
+                param_types,
+                args: args1,
+            } => {
                 if let Pattern::Function { args: args2, .. } = pat2 {
                     // The intersection is just the intersection of the functions' arguments.
                     let mut anything_modified = false;
@@ -352,10 +368,7 @@ impl PatternExhaustionCheck {
                     }
                     (
                         anything_modified,
-                        Some(Pattern::Function {
-                            param_types,
-                            args,
-                        }),
+                        Some(Pattern::Function { param_types, args }),
                     )
                 } else {
                     panic!("was not function")
@@ -364,7 +377,10 @@ impl PatternExhaustionCheck {
             Pattern::Unknown(_) => {
                 // An unknown pattern matches anything, so return just pat2.
                 // If pat2 is `Named` or `Unknown`, no deduction occured.
-                (!matches!(pat2, Pattern::Named(_) | Pattern::Unknown(_)), Some(pat2))
+                (
+                    !matches!(pat2, Pattern::Named(_) | Pattern::Unknown(_)),
+                    Some(pat2),
+                )
             }
         }
     }
@@ -677,7 +693,9 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if !args_exhaustion.unmatched_patterns.is_empty() {
-            let mut message = String::from("the patterns in this definition are not exhaustive\nunmatched patterns:");
+            let mut message = String::from(
+                "the patterns in this definition are not exhaustive\nunmatched patterns:",
+            );
             for pat in args_exhaustion.unmatched_patterns {
                 message += &format!("\n    {} {}", def_ident.name, pat);
             }
