@@ -12,4 +12,4 @@ def big : Bool -> Bool -> Bool -> Bool -> Bool
     big _ _ _ _ = False
 
 def fmap: (Bool -> Bool) -> Bool -> Bool
-    fmap a b = b
+    fmap a b = True a

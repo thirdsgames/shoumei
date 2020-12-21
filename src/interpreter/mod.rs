@@ -42,6 +42,7 @@ pub mod index_resolve;
 pub mod lexer;
 pub mod parser;
 pub mod type_check;
+pub mod type_deduce;
 pub mod type_resolve;
 pub mod types;
 

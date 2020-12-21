@@ -11,6 +11,7 @@ use super::{
     index::{ModuleIndex, ProjectIndex, TypeDeclarationTypeI},
     index_resolve::{resolve_symbol, resolve_type_constructor, TypeConstructorInvocation},
     parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP},
+    type_deduce::deduce_expr_type,
     type_resolve::{resolve_typep, Type},
     types::{TypeDeclarationC, TypeDeclarationTypeC},
     Location, ModulePath, QualifiedName, Range,
@@ -414,19 +415,19 @@ struct TypeChecker<'a> {
 
 /// A variable bound by the definition of a function.
 #[derive(Debug)]
-struct BoundVariable {
+pub struct BoundVariable {
     pub range: Range,
     pub var_type: Type,
 }
 
 #[derive(Debug)]
-struct Expression {
+pub struct Expression {
     pub ty: Type,
     pub contents: ExpressionContents,
 }
 
 #[derive(Debug)]
-enum ExpressionContents {
+pub enum ExpressionContents {
     /// A local variable e.g. `x`.
     Variable(IdentifierP),
     /// A symbol in global scope e.g. `+` or `fold`.
@@ -465,7 +466,7 @@ impl<'a> TypeChecker<'a> {
                         .collect::<DiagnosticResult<_>>()
                 });
                 // Check that the patterns we have generated are exhaustive.
-                cases_validated.bind(|cases_validated| {
+                cases_validated.deny().bind(|cases_validated| {
                     self.check_cases_exhaustive(
                         &symbol_type,
                         cases_validated
@@ -543,11 +544,15 @@ impl<'a> TypeChecker<'a> {
 
         // Now, parse the expression, now that we know the input variable types.
         bound_variables
-            .bind(|bound_variables| self.parse_expr(&bound_variables, replacement))
+            .bind(|bound_variables| {
+                self.parse_expr(&bound_variables, replacement).bind(|mut expr| {
+                    deduce_expr_type(self.module_path, self.project_index, &bound_variables, result, &mut expr).map(|_| expr)
+                })
+            })
             .map(|expr| (range, args, expr))
     }
 
-    /// Type checks an expression, assigning new type variables to each sub-expression.
+    /// Assigns new type variables to each sub-expression, so that this expression can be easily type checked.
     fn parse_expr(
         &self,
         bound_variables: &HashMap<String, BoundVariable>,
