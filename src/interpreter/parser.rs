@@ -28,8 +28,11 @@ enum Item {
 
 #[derive(Debug)]
 pub enum TypeP {
-    /// An explicitly named type without type parameters, e.g. `Bool`.
-    Named(IdentifierP),
+    /// An explicitly named type possibly with type parameters, e.g. `Bool` or `Either a b`.
+    Named {
+        identifier: IdentifierP,
+        args: Vec<TypeP>,
+    },
     /// A function `a -> b`.
     /// Functions with more arguments, e.g. `a -> b -> c` are represented as
     /// curried functions, e.g. `a -> (b -> c)`.
@@ -39,7 +42,9 @@ pub enum TypeP {
 impl TypeP {
     pub fn range(&self) -> Range {
         match self {
-            TypeP::Named(ident) => ident.range,
+            TypeP::Named { identifier, args } => args
+                .iter()
+                .fold(identifier.range, |acc, i| acc.union(i.range())),
             TypeP::Function(left, right) => left.range().union(right.range()),
         }
     }
@@ -55,12 +60,16 @@ pub struct IdentifierP {
 #[derive(Debug)]
 pub struct DataP {
     pub identifier: IdentifierP,
+    pub type_params: Vec<IdentifierP>,
     pub type_ctors: Vec<TypeConstructorP>,
 }
 
+/// Represents a type constructor in a `data` block.
+/// For example, `Just a`, where the `Just` is the `id`, and the `a` is the only element in `arguments`.
 #[derive(Debug)]
 pub struct TypeConstructorP {
     pub id: IdentifierP,
+    pub arguments: Vec<TypeP>,
 }
 
 /// A `def` block. Defines a symbol's type and what values it takes under what circumstances.
@@ -158,7 +167,7 @@ fn parse_line(
     }
 }
 
-/// `data ::= identifier "=" type_ctors`
+/// `data ::= identifier type_params "=" type_ctors`
 fn parse_data<I>(
     module_path: &ModulePath,
     mut line: Peekable<I>,
@@ -168,22 +177,51 @@ where
     I: Iterator<Item = TokenTree>,
 {
     parse_identifier(module_path, &mut line, end_of_line).bind(|identifier| {
-        // We now need an `=` symbol, then a series of type constructors separated by `|` symbols.
-        let assign_symbol = parse_token(
-            module_path,
-            &mut line,
-            end_of_line,
-            |token| token.token_type == TokenType::Assign,
-            "expected assign symbol",
-        );
-        assign_symbol.bind(|_| {
-            let type_ctors = parse_type_ctors(module_path, line, end_of_line);
-            type_ctors.map(|type_ctors| DataP {
-                identifier,
-                type_ctors,
+        // We now need the list of type parameters.
+        let type_params = parse_type_params(module_path, &mut line, end_of_line);
+        type_params.bind(|type_params| {
+            // We now need an `=` symbol, then a series of type constructors separated by `|` symbols.
+            let assign_symbol = parse_token(
+                module_path,
+                &mut line,
+                end_of_line,
+                |token| token.token_type == TokenType::Assign,
+                "expected assign symbol",
+            );
+            assign_symbol.bind(|_| {
+                let type_ctors = parse_type_ctors(module_path, line, end_of_line);
+                type_ctors.map(|type_ctors| DataP {
+                    identifier,
+                    type_params,
+                    type_ctors,
+                })
             })
         })
     })
+}
+
+/// Parses type parameters in a data type, e.g. the `a b` in `Either a b`.
+fn parse_type_params<I>(
+    module_path: &ModulePath,
+    line: &mut Peekable<I>,
+    end_of_line: Location,
+) -> DiagnosticResult<Vec<IdentifierP>>
+where
+    I: Iterator<Item = TokenTree>,
+{
+    let mut messages = Vec::new();
+    let mut identifiers = Vec::new();
+    while peek_token(line, |token| {
+        matches!(token.token_type, TokenType::Identifier(_))
+    }) {
+        let (ident, mut inner_messages) =
+            parse_identifier(module_path, line, end_of_line).destructure();
+        if let Some(ident) = ident {
+            identifiers.push(ident);
+        }
+        messages.append(&mut inner_messages);
+    }
+    DiagnosticResult::ok_with_many(identifiers, messages)
 }
 
 /// `type_ctors ::= type_ctor ("|" type_ctors)?`
@@ -222,7 +260,7 @@ where
     })
 }
 
-/// `type_ctor ::= identifier`
+/// `type_ctor ::= identifier type_params`
 fn parse_type_ctor<I>(
     module_path: &ModulePath,
     line: &mut Peekable<I>,
@@ -231,7 +269,34 @@ fn parse_type_ctor<I>(
 where
     I: Iterator<Item = TokenTree>,
 {
-    parse_identifier(module_path, line, end_of_line).map(|id| TypeConstructorP { id })
+    parse_identifier(module_path, line, end_of_line).bind(|id| {
+        parse_type_args(module_path, line, end_of_line)
+            .map(|arguments| TypeConstructorP { id, arguments })
+    })
+}
+
+/// `type_args ::= type*`
+fn parse_type_args<I>(
+    module_path: &ModulePath,
+    line: &mut Peekable<I>,
+    end_of_line: Location,
+) -> DiagnosticResult<Vec<TypeP>>
+where
+    I: Iterator<Item = TokenTree>,
+{
+    let mut messages = Vec::new();
+    let mut arguments = Vec::new();
+    while peek_token(line, |token| !matches!(token.token_type, TokenType::TypeOr | TokenType::Arrow))
+        || matches!(line.peek(), Some(TokenTree::Tree { .. }))
+    {
+        // We have another type to parse.
+        let (arg, mut inner_messages) = parse_type(module_path, line, end_of_line, false).destructure();
+        if let Some(arg) = arg {
+            arguments.push(arg);
+        }
+        messages.append(&mut inner_messages);
+    }
+    DiagnosticResult::ok_with_many(arguments, messages)
 }
 
 /// `def ::= identifier ":" type "\n" def_cases`
@@ -253,7 +318,7 @@ where
                 |token| matches!(token.token_type, TokenType::Type),
                 "expected type symbol",
             )
-            .bind(|_| parse_type(module_path, &mut line, end_of_line))
+            .bind(|_| parse_type(module_path, &mut line, end_of_line, true))
             .bind(|symbol_type| {
                 assert_end_of_line(module_path, line).map(|_| DefinitionP {
                     identifier,
@@ -424,12 +489,16 @@ where
     }
 }
 
-/// `type ::= (type_name | "(" type ")") ("->" type)?`
+/// `type ::= (type_name type_args | "(" type ")") ("->" type)?`
+/// If `should_parse_type_args` is false, then no type arguments will be parsed on this line,
+/// but if the next token is actually a token tree then this parameter will be set to true so it parses the full contents of the tree.
+/// This is mostly a precedence-related switch.
 #[rustfmt::skip] // rustfmt messes up the `matches!` invocation, and makes it so clippy raises a warning
 fn parse_type<I>(
     module_path: &ModulePath,
     line: &mut Peekable<I>,
     end_of_line: Location,
+    should_parse_type_args: bool,
 ) -> DiagnosticResult<TypeP>
 where
     I: Iterator<Item = TokenTree>,
@@ -438,7 +507,7 @@ where
         Some(TokenTree::Tree { .. }) => {
             if let TokenTree::Tree { tokens, close, .. } = line.next().unwrap() {
                 let mut token_iter = tokens.into_iter().peekable();
-                let ty = parse_type(module_path, &mut token_iter, close.start);
+                let ty = parse_type(module_path, &mut token_iter, close.start, true);
                 if let Some(t) = token_iter.peek() {
                     ty.with(ErrorMessage::new(
                         String::from("unexpected extra tokens after end of type"),
@@ -453,7 +522,18 @@ where
             }
         }
         _ => {
-            parse_identifier_with_message(module_path, line, end_of_line, "expected type name").map(TypeP::Named)
+            let identifier = parse_identifier_with_message(module_path, line, end_of_line, "expected type name");
+            if should_parse_type_args {
+                identifier.bind(|identifier| parse_type_args(module_path, line, end_of_line).map(|args| TypeP::Named {
+                    identifier,
+                    args,
+                }))
+            } else {
+                identifier.map(|identifier| TypeP::Named {
+                    identifier,
+                    args: Vec::new(),
+                })
+            }
         }
     };
 
@@ -461,7 +541,7 @@ where
         if peek_token(line, |token| matches!(token.token_type, TokenType::Arrow)) {
             // Consume the `->` token.
             line.next();
-            parse_type(module_path, line, end_of_line)
+            parse_type(module_path, line, end_of_line, false)
                 .map(|rhs_type| TypeP::Function(Box::new(parsed_type), Box::new(rhs_type)))
         } else {
             DiagnosticResult::ok(parsed_type)
@@ -511,7 +591,7 @@ fn assert_end_of_line(
         DiagnosticResult::ok_with(
             (),
             ErrorMessage::new(
-                String::from("expected end of line"),
+                String::from("didn't understand this"),
                 Severity::Error,
                 Diagnostic::at(module_path.clone(), token.range()),
             ),

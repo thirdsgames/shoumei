@@ -1,7 +1,7 @@
 //! Performs type deduction and type checking of expressions and patterns.
 
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, HashSet},
     fmt::Display,
 };
 
@@ -447,44 +447,45 @@ impl<'a> TypeChecker<'a> {
             let def_ident = definition.identifier;
 
             // Let's type check the function signature.
-            let symbol_type = resolve_typep(self.module_path, &symbol_type, self.project_types);
-            let validated = symbol_type.bind(|symbol_type| {
-                // We need to check pattern exhaustiveness in the definition's cases.
-                // Let's resolve each case's patterns and expressions.
-                let cases = cases
-                    .into_iter()
-                    .map(|case| self.resolve_case(&def_ident.name, case))
-                    .collect::<DiagnosticResult<_>>();
+            let symbol = &self.project_index[self.module_path].symbols[&def_ident.name];
+            let symbol_type = &symbol.symbol_type;
 
-                // Now we can check whether the patterns are valid.
-                let cases_validated = cases.bind(|cases| {
-                    cases
-                        .into_iter()
-                        .map(|(range, args, replacement)| {
-                            self.validate_case(&symbol_type, range, args, replacement)
-                        })
-                        .collect::<DiagnosticResult<_>>()
-                });
-                // Check that the patterns we have generated are exhaustive.
-                cases_validated.deny().bind(|cases_validated| {
-                    self.check_cases_exhaustive(
-                        &symbol_type,
-                        cases_validated
-                            .iter()
-                            .map(|(range, pat, _)| (*range, pat))
-                            .collect(),
-                        &def_ident,
-                    )
-                    .map(|_| (symbol_type, cases_validated))
-                })
+            // We need to check pattern exhaustiveness in the definition's cases.
+            // Let's resolve each case's patterns and expressions.
+            let cases = cases
+                .into_iter()
+                .map(|case| self.resolve_case(&def_ident.name, case))
+                .collect::<DiagnosticResult<_>>();
+
+            // Now we can check whether the patterns are valid.
+            let cases_validated = cases.bind(|cases| {
+                cases
+                    .into_iter()
+                    .map(|(range, args, replacement)| {
+                        self.validate_case(&symbol_type, range, args, replacement)
+                    })
+                    .collect::<DiagnosticResult<_>>()
             });
+            // Check that the patterns we have generated are exhaustive.
+            let validated = cases_validated.deny().bind(|cases_validated| {
+                self.check_cases_exhaustive(
+                    &symbol_type,
+                    cases_validated
+                        .iter()
+                        .map(|(range, pat, _)| (*range, pat))
+                        .collect(),
+                    &def_ident,
+                )
+                .map(|_| cases_validated)
+            });
+
             let (definition_parsed, mut inner_messages) = validated.destructure();
             self.messages.append(&mut inner_messages);
-            if let Some((symbol_type, cases)) = definition_parsed {
+            if let Some(cases) = definition_parsed {
                 definitions.insert(
                     def_ident.name,
                     Definition {
-                        symbol_type,
+                        symbol_type: symbol_type.clone(),
                         cases: cases
                             .into_iter()
                             .map(|(range, arg_patterns, replacement)| DefinitionCase {
@@ -545,9 +546,17 @@ impl<'a> TypeChecker<'a> {
         // Now, parse the expression, now that we know the input variable types.
         bound_variables
             .bind(|bound_variables| {
-                self.parse_expr(&bound_variables, replacement).bind(|mut expr| {
-                    deduce_expr_type(self.module_path, self.project_index, &bound_variables, result, &mut expr).map(|_| expr)
-                })
+                self.parse_expr(&bound_variables, replacement)
+                    .bind(|mut expr| {
+                        deduce_expr_type(
+                            self.module_path,
+                            self.project_index,
+                            &bound_variables,
+                            result,
+                            &mut expr,
+                        )
+                        .map(|_| expr)
+                    })
             })
             .map(|expr| (range, args, expr))
     }
@@ -626,14 +635,32 @@ impl<'a> TypeChecker<'a> {
                 DiagnosticResult::ok(map)
             }
             Pattern::TypeConstructor { type_ctor, args } => match expected_type {
-                Type::Named(expected_name) => {
+                Type::Named {
+                    name: expected_name,
+                    parameters: expected_parameters,
+                } => {
                     if type_ctor.data_type == expected_name {
                         let data_decl =
                             &self.project_types[&expected_name.module_path][&expected_name.name];
                         if let TypeDeclarationTypeC::Data(data) = &data_decl.decl_type {
-                            // TODO when we have type constructors that take variables, we need to add behaviour here.
-                            //collect_bound_vars(self.module_path, args.iter().map(|arg| self.match_and_bind(pattern, expected_type)))
-                            DiagnosticResult::ok(HashMap::new())
+                            // Process the arguments to this type constructor.
+                            if args.len() != expected_parameters.len() {
+                                return DiagnosticResult::fail(ErrorMessage::new(
+                                    format!(
+                                        "expected {} parameters for this type constructor",
+                                        expected_parameters.len()
+                                    ),
+                                    Severity::Error,
+                                    Diagnostic::at(self.module_path.clone(), type_ctor.range),
+                                ));
+                            }
+                            let bound_args = args
+                                .iter()
+                                .zip(expected_parameters)
+                                .map(|(arg, expected)| self.match_and_bind(arg, expected))
+                                .collect::<DiagnosticResult<_>>();
+                            bound_args
+                                .bind(|bound_args| collect_bound_vars(self.module_path, bound_args))
                         } else {
                             panic!("was not a data constructor");
                         }
@@ -651,6 +678,14 @@ impl<'a> TypeChecker<'a> {
                     Diagnostic::at(self.module_path.clone(), type_ctor.range),
                 )),
                 Type::Unknown(_) => panic!("expected type must be known"),
+                Type::Variable { name, .. } => DiagnosticResult::fail(ErrorMessage::new(
+                    format!(
+                        "expected a name for a variable of type `{}`, not a type constructor",
+                        name
+                    ),
+                    Severity::Error,
+                    Diagnostic::at(self.module_path.clone(), type_ctor.range),
+                )),
             },
             Pattern::Unknown(_) => DiagnosticResult::ok(HashMap::new()),
             Pattern::Function { .. } => unimplemented!(),
@@ -831,6 +866,7 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
+/// Flattens a list of maps into a single map, adding error messages if variables were multiply defined.
 fn collect_bound_vars(
     module_path: &ModulePath,
     bound_variables: Vec<HashMap<String, BoundVariable>>,
@@ -867,13 +903,14 @@ fn collect_bound_vars(
 /// If this is not a function, then it is treated as a zero-argument function.
 fn get_args_of_type(symbol_type: &Type) -> (Vec<Type>, Type) {
     match symbol_type {
-        Type::Named(_) => (Vec::new(), symbol_type.clone()),
+        Type::Named { .. } => (Vec::new(), symbol_type.clone()),
         Type::Function(left, right) => {
             let (mut args, out) = get_args_of_type(&right);
             args.insert(0, *left.clone());
             (args, out)
         }
         Type::Unknown(_) => panic!("type must be known"),
+        Type::Variable { .. } => (Vec::new(), symbol_type.clone()),
     }
 }
 

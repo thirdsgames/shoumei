@@ -2,7 +2,12 @@ use std::collections::HashMap;
 
 use crate::DiagnosticResult;
 
-use super::{ModulePath, index::ProjectIndex, type_check::{BoundVariable, Expression}, type_resolve::Type};
+use super::{
+    index::ProjectIndex,
+    type_check::{BoundVariable, Expression},
+    type_resolve::Type,
+    ModulePath,
+};
 
 /// Deduces the type of an expression.
 /// Any error messages are added to the diagnostic result.

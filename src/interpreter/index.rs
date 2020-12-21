@@ -2,7 +2,7 @@
 //! storing type information. The module index is sufficient to determine the type
 //! of any expression.
 
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
@@ -95,8 +95,13 @@ pub fn index(
             }
             Entry::Vacant(vacant) => {
                 // Let's add this definition into the map.
-                let symbol_type =
-                    resolve_typep(module_path, &definition.symbol_type, project_types);
+                // TODO when definitions can have `forall` type parameters, we should update this.
+                let symbol_type = resolve_typep(
+                    module_path,
+                    &definition.symbol_type,
+                    &HashSet::new(),
+                    project_types,
+                );
                 let (symbol_type, mut inner_messages) = symbol_type.destructure();
                 messages.append(&mut inner_messages);
                 if let Some(symbol_type) = symbol_type {
@@ -111,11 +116,22 @@ pub fn index(
     }
 
     for data in &module.data {
-        let data_type = Type::Named(QualifiedName {
-            module_path: module_path.clone(),
-            name: data.identifier.name.clone(),
-            range: data.identifier.range,
-        });
+        let data_type = Type::Named {
+            name: QualifiedName {
+                module_path: module_path.clone(),
+                name: data.identifier.name.clone(),
+                range: data.identifier.range,
+            },
+            parameters: data
+                .type_params
+                .iter()
+                .map(|param| Type::Variable {
+                    name: param.name.clone(),
+                    parameters: Vec::new(),
+                })
+                .collect(),
+        };
+
         match types.entry(data.identifier.name.clone()) {
             Entry::Occupied(occupied) => {
                 messages.push(name_used_earlier(
@@ -126,6 +142,12 @@ pub fn index(
             }
             Entry::Vacant(vacant) => {
                 // Let's add the definition into the map.
+                let type_params = data
+                    .type_params
+                    .iter()
+                    .map(|ident| ident.name.clone())
+                    .collect::<HashSet<_>>();
+
                 for type_ctor in &data.type_ctors {
                     // We need to add each type constructor as a function.
                     match symbols.entry(type_ctor.id.name.clone()) {
@@ -137,12 +159,45 @@ pub fn index(
                             ));
                         }
                         Entry::Vacant(vacant) => {
-                            // Let's add the type constructor as a function.
-                            // Once we have actual type constructors that take values, this will need
-                            // to include some diagnostics, since those values might fail to type check.
+                            // Let's add the type constructor as a function, making sure
+                            // to add the argument types.
+
+                            let mut arg_types = Vec::new();
+                            for arg in &type_ctor.arguments {
+                                // This argument could be a type parameter, or just a normal type.
+                                let (resolved_type, mut inner_messages) =
+                                    resolve_typep(module_path, arg, &type_params, project_types)
+                                        .destructure();
+                                if let Some(resolved_type) = resolved_type {
+                                    arg_types.push(resolved_type);
+                                }
+                                if let Some(message) = inner_messages.first_mut() {
+                                    message.help.push(HelpMessage {
+                                        message: String::from(
+                                            "if this was a type parameter, declare the type parameter here",
+                                        ),
+                                        help_type: HelpType::Help,
+                                        diagnostic: Diagnostic::at_location(
+                                            module_path.clone(),
+                                            data.identifier.range.end,
+                                        ),
+                                    });
+                                }
+                                messages.append(&mut inner_messages);
+                            }
+
+                            // Convert the list of arguments [a, b, c, ...] into a function `a -> b -> c -> ... -> t` where
+                            // `t` is the data type that we're parsing.
+                            // We'll do this iteratively, since we want a hierarchy like `a -> (b -> (c -> (... -> t)))`.
+                            // Probably could have used a fold, but this is good for now.
+                            let mut type_ctor_type = data_type.clone();
+                            while let Some(last_type) = arg_types.pop() {
+                                type_ctor_type = Type::Function(Box::new(last_type), Box::new(type_ctor_type));
+                            }
+
                             let symbol = SymbolI {
                                 name: type_ctor.id.clone().into(),
-                                symbol_type: data_type.clone(),
+                                symbol_type: type_ctor_type,
                             };
                             vacant.insert(symbol);
                             type_ctors
@@ -150,6 +205,7 @@ pub fn index(
                         }
                     }
                 }
+
                 let datai = DataI {
                     range: data.identifier.range,
                     type_ctors: data
@@ -171,5 +227,6 @@ pub fn index(
         type_ctors,
         symbols,
     };
+    println!("Constructed index: {:#?}", index);
     DiagnosticResult::ok_with_many(index, messages)
 }

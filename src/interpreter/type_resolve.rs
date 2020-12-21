@@ -1,6 +1,7 @@
 //! Resolves an unqualified name into a fully qualified name with type information.
 
 use std::{
+    collections::HashSet,
     fmt::Display,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -15,12 +16,17 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
-    /// An explicitly named type without type parameters, e.g. `Bool`.
-    Named(QualifiedName),
+    /// An explicitly named type possibly with type parameters, e.g. `Bool` or `Either a b`.
+    Named {
+        name: QualifiedName,
+        parameters: Vec<Type>,
+    },
     /// A function `a -> b`.
     /// Functions with more arguments, e.g. `a -> b -> c` are represented as
     /// curried functions, e.g. `a -> (b -> c)`.
     Function(Box<Type>, Box<Type>),
+    /// A type variable, like `a` or `m a`.
+    Variable { name: String, parameters: Vec<Type> },
     /// An unknown type, used for intermediate values of expressions that we don't know the type of.
     /// Create this using `new_unknown`.
     Unknown(u64),
@@ -34,28 +40,48 @@ impl Type {
         Type::Unknown(UNKNOWN_TYPE_COUNTER.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// If `parenthesise` is true, functions should be parenthesised.
+    /// If `parenthesise` is true, the parameter should be parenthesised.
     pub fn fmt_proper(
         &self,
         f: &mut std::fmt::Formatter<'_>,
         parenthesise: bool,
     ) -> std::fmt::Result {
+        if parenthesise {
+            write!(f, "(")?;
+        }
         match self {
-            Type::Named(name) => write!(f, "{}", name.name),
-            Type::Function(left, right) => {
-                if parenthesise {
-                    write!(f, "(")?;
+            Type::Named { name, parameters } => {
+                write!(f, "{}", name.name)?;
+                for param in parameters {
+                    // Check if we should parenthesise this parameter.
+                    let should_parenthesise = match param {
+                        Type::Named {
+                            parameters: inner_params,
+                            ..
+                        } => !inner_params.is_empty(),
+                        Type::Function(_, _) => true,
+                        Type::Variable {
+                            parameters: inner_params,
+                            ..
+                        } => !inner_params.is_empty(),
+                        Type::Unknown(_) => false,
+                    };
+                    write!(f, " ")?;
+                    param.fmt_proper(f, should_parenthesise)?;
                 }
-                left.fmt_proper(f, true)?;
+            }
+            Type::Function(left, right) => {
+                left.fmt_proper(f, matches!(**left, Type::Function(_, _)))?;
                 write!(f, " -> ")?;
                 right.fmt_proper(f, false)?;
-                if parenthesise {
-                    write!(f, ")")?;
-                }
-                Ok(())
             }
-            Type::Unknown(_) => write!(f, "_"),
+            Type::Unknown(_) => write!(f, "_")?,
+            Type::Variable { name, parameters } => write!(f, "{}", name)?,
+        };
+        if parenthesise {
+            write!(f, ")")?;
         }
+        Ok(())
     }
 }
 
@@ -65,19 +91,36 @@ impl Display for Type {
     }
 }
 
-/// Resolves a type into a fully qualified type.
+/// Resolves a type into a fully qualified type, given a list of the current
+/// type parameters.
 pub fn resolve_typep(
     module_path: &ModulePath,
     typep: &TypeP,
+    type_params: &HashSet<String>,
     project_types: &ProjectTypesC,
 ) -> DiagnosticResult<Type> {
     match typep {
-        TypeP::Named(identifier) => {
-            resolve_type_identifier(module_path, identifier, project_types).map(Type::Named)
+        TypeP::Named { identifier, args } => {
+            if type_params.contains(&identifier.name) {
+                args.iter()
+                    .map(|arg| resolve_typep(module_path, arg, type_params, project_types))
+                    .collect::<DiagnosticResult<Vec<_>>>()
+                    .map(|parameters| Type::Variable {
+                        name: identifier.name.clone(),
+                        parameters,
+                    })
+            } else {
+                resolve_type_identifier(module_path, identifier, project_types).bind(|name| {
+                    args.iter()
+                        .map(|arg| resolve_typep(module_path, arg, type_params, project_types))
+                        .collect::<DiagnosticResult<Vec<_>>>()
+                        .map(|parameters| Type::Named { name, parameters })
+                })
+            }
         }
         TypeP::Function(left, right) => {
-            resolve_typep(module_path, &left, project_types).bind(|left| {
-                resolve_typep(module_path, &right, project_types)
+            resolve_typep(module_path, &left, type_params, project_types).bind(|left| {
+                resolve_typep(module_path, &right, type_params, project_types)
                     .map(|right| Type::Function(Box::new(left), Box::new(right)))
             })
         }
