@@ -1,4 +1,5 @@
 data Bool = True | False
+data Unit = Unit
 
 def and : Bool -> Bool -> Bool
     and True True = True
@@ -16,3 +17,7 @@ data TruthTable = TruthTable Bool Bool Bool Bool
 data Maybe a = Just a | Nothing
 
 data Chain a = Chain (Maybe (Maybe a)) | Empty
+
+def and2 : Maybe Unit -> Bool -> Maybe Unit
+    and2 (Just _) True = Just Unit
+    and2 _ _ = Nothing

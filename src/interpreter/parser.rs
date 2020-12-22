@@ -290,7 +290,7 @@ where
         || matches!(line.peek(), Some(TokenTree::Tree { .. }))
     {
         // We have another type to parse.
-        let (arg, mut inner_messages) = parse_type(module_path, line, end_of_line, false).destructure();
+        let (arg, mut inner_messages) = parse_type(module_path, line, end_of_line, true).destructure();
         if let Some(arg) = arg {
             arguments.push(arg);
         }
@@ -318,7 +318,7 @@ where
                 |token| matches!(token.token_type, TokenType::Type),
                 "expected type symbol",
             )
-            .bind(|_| parse_type(module_path, &mut line, end_of_line, true))
+            .bind(|_| parse_type(module_path, &mut line, end_of_line, false))
             .bind(|symbol_type| {
                 assert_end_of_line(module_path, line).map(|_| DefinitionP {
                     identifier,
@@ -490,15 +490,14 @@ where
 }
 
 /// `type ::= (type_name type_args | "(" type ")") ("->" type)?`
-/// If `should_parse_type_args` is false, then no type arguments will be parsed on this line,
-/// but if the next token is actually a token tree then this parameter will be set to true so it parses the full contents of the tree.
-/// This is mostly a precedence-related switch.
+/// If `single_tree` is true, then we only expect to parse a single token tree, so the only valid types are a
+/// single identifier or a parenthesised type.
 #[rustfmt::skip] // rustfmt messes up the `matches!` invocation, and makes it so clippy raises a warning
 fn parse_type<I>(
     module_path: &ModulePath,
     line: &mut Peekable<I>,
     end_of_line: Location,
-    should_parse_type_args: bool,
+    single_tree: bool,
 ) -> DiagnosticResult<TypeP>
 where
     I: Iterator<Item = TokenTree>,
@@ -507,7 +506,7 @@ where
         Some(TokenTree::Tree { .. }) => {
             if let TokenTree::Tree { tokens, close, .. } = line.next().unwrap() {
                 let mut token_iter = tokens.into_iter().peekable();
-                let ty = parse_type(module_path, &mut token_iter, close.start, true);
+                let ty = parse_type(module_path, &mut token_iter, close.start, false);
                 if let Some(t) = token_iter.peek() {
                     ty.with(ErrorMessage::new(
                         String::from("unexpected extra tokens after end of type"),
@@ -523,30 +522,34 @@ where
         }
         _ => {
             let identifier = parse_identifier_with_message(module_path, line, end_of_line, "expected type name");
-            if should_parse_type_args {
-                identifier.bind(|identifier| parse_type_args(module_path, line, end_of_line).map(|args| TypeP::Named {
-                    identifier,
-                    args,
-                }))
-            } else {
+            if single_tree {
                 identifier.map(|identifier| TypeP::Named {
                     identifier,
                     args: Vec::new(),
                 })
+            } else {
+                identifier.bind(|identifier| parse_type_args(module_path, line, end_of_line).map(|args| TypeP::Named {
+                    identifier,
+                    args,
+                }))
             }
         }
     };
 
-    initial_type.bind(|parsed_type| {
-        if peek_token(line, |token| matches!(token.token_type, TokenType::Arrow)) {
-            // Consume the `->` token.
-            line.next();
-            parse_type(module_path, line, end_of_line, false)
-                .map(|rhs_type| TypeP::Function(Box::new(parsed_type), Box::new(rhs_type)))
-        } else {
-            DiagnosticResult::ok(parsed_type)
-        }
-    })
+    if single_tree {
+        initial_type
+    } else {
+        initial_type.bind(|parsed_type| {
+            if peek_token(line, |token| matches!(token.token_type, TokenType::Arrow)) {
+                // Consume the `->` token.
+                line.next();
+                parse_type(module_path, line, end_of_line, false)
+                    .map(|rhs_type| TypeP::Function(Box::new(parsed_type), Box::new(rhs_type)))
+            } else {
+                DiagnosticResult::ok(parsed_type)
+            }
+        })
+    }
 }
 
 fn parse_identifier(
