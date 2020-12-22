@@ -221,8 +221,8 @@ impl PatternExhaustionCheck {
                 if let TypeDeclarationTypeI::Data(datai) = &data_type_decl.decl_type {
                     // Loop through all of the type constructors.
                     let mut complement = Vec::new();
-                    for type_ctor_name in &datai.type_ctors {
-                        if type_ctor_name == &type_ctor.type_ctor {
+                    for known_type_ctor in &datai.type_ctors {
+                        if known_type_ctor.name == type_ctor.type_ctor {
                             // This is the type constructor we want to find the complement of.
                             // The complement of a type constructor e.g. `Foo a b c` is the intersection of all possible combinations of
                             // complements of a, b and c except for `Foo a b c` itself. In this example, it would be
@@ -235,7 +235,7 @@ impl PatternExhaustionCheck {
                                     .map(|arg_list| Pattern::TypeConstructor {
                                         type_ctor: TypeConstructorInvocation {
                                             data_type: type_ctor.data_type.clone(),
-                                            type_ctor: type_ctor_name.clone(),
+                                            type_ctor: known_type_ctor.name.clone(),
                                             range: Location { line: 0, col: 0 }.into(),
                                         },
                                         args: arg_list,
@@ -246,10 +246,14 @@ impl PatternExhaustionCheck {
                             complement.push(Pattern::TypeConstructor {
                                 type_ctor: TypeConstructorInvocation {
                                     data_type: type_ctor.data_type.clone(),
-                                    type_ctor: type_ctor_name.clone(),
+                                    type_ctor: known_type_ctor.name.clone(),
                                     range: Location { line: 0, col: 0 }.into(),
                                 },
-                                args: Vec::new(),
+                                args: known_type_ctor
+                                    .arguments
+                                    .iter()
+                                    .map(|_| Pattern::Unknown(Location { line: 0, col: 0 }.into()))
+                                    .collect(),
                             });
                         }
                     }
@@ -653,33 +657,58 @@ impl<'a> TypeChecker<'a> {
             Pattern::TypeConstructor { type_ctor, args } => match expected_type {
                 Type::Named {
                     name: expected_name,
-                    parameters: expected_parameters,
+                    parameters: concrete_type_parameters,
                 } => {
                     if type_ctor.data_type == expected_name {
-                        let data_decl =
-                            &self.project_types[&expected_name.module_path][&expected_name.name];
-                        if let TypeDeclarationTypeC::Data(data) = &data_decl.decl_type {
-                            // Process the arguments to this type constructor.
-                            if args.len() != expected_parameters.len() {
-                                return DiagnosticResult::fail(ErrorMessage::new(
-                                    format!(
-                                        "expected {} parameters for this type constructor",
-                                        expected_parameters.len()
-                                    ),
-                                    Severity::Error,
-                                    Diagnostic::at(self.module_path.clone(), type_ctor.range),
-                                ));
-                            }
-                            let bound_args = args
-                                .iter()
-                                .zip(expected_parameters)
-                                .map(|(arg, expected)| self.match_and_bind(arg, expected))
-                                .collect::<DiagnosticResult<_>>();
-                            bound_args
-                                .bind(|bound_args| collect_bound_vars(self.module_path, bound_args))
-                        } else {
-                            panic!("was not a data constructor");
+                        // Find the data type declaration in the index.
+                        let data_type_decl = &self.project_index[&expected_name.module_path].types
+                            [&expected_name.name];
+                        // Find the original list of named type parameters. We can then create a bijective correspondence
+                        // between the list of `concrete_type_parameters` given and the list of `named_type_parameters`,
+                        // so we can identify which type parameter has which value.
+                        let named_type_parameters =
+                            if let TypeDeclarationTypeI::Data(datai) = &data_type_decl.decl_type {
+                                &datai.type_params
+                            } else {
+                                panic!("was not data type")
+                            };
+
+                        // Find the list of parameters for the type constructor that we're creating.
+                        let expected_parameters = self.project_index[&expected_name.module_path]
+                            .get_type_ctor_args(&type_ctor.type_ctor);
+
+                        // Process the arguments to this type constructor.
+                        if args.len() != expected_parameters.len() {
+                            return DiagnosticResult::fail(ErrorMessage::new(
+                                format!(
+                                    "expected {} parameters for this type constructor",
+                                    expected_parameters.len()
+                                ),
+                                Severity::Error,
+                                Diagnostic::at(self.module_path.clone(), type_ctor.range),
+                            ));
                         }
+
+                        // We now know that the amount of arguments supplied is correct for this type constructor.
+                        let bound_args = args
+                            .iter()
+                            .zip(expected_parameters)
+                            .map(|(arg, expected)| {
+                                // For each argument in the pattern, we need to match that argument against the known type
+                                // of this argument. So we need to match the type parameters in this type constructor
+                                // against the type parameters above.
+                                // This means that when matching a `Maybe Bool`, the type constructor `Just a` becomes `Just Bool`,
+                                // because the `a` is replaced with the concrete type `Bool`.
+                                let expected = Self::replace_type_variables(
+                                    named_type_parameters,
+                                    &concrete_type_parameters,
+                                    expected,
+                                );
+                                self.match_and_bind(arg, expected)
+                            })
+                            .collect::<DiagnosticResult<_>>();
+                        bound_args
+                            .bind(|bound_args| collect_bound_vars(self.module_path, bound_args))
                     } else {
                         DiagnosticResult::fail(ErrorMessage::new(
                             format!("expected a type constructor for `{}`", expected_name),
@@ -694,7 +723,7 @@ impl<'a> TypeChecker<'a> {
                     Diagnostic::at(self.module_path.clone(), type_ctor.range),
                 )),
                 Type::Unknown(_) => panic!("expected type must be known"),
-                Type::Variable { name, .. } => DiagnosticResult::fail(ErrorMessage::new(
+                Type::Variable(name) => DiagnosticResult::fail(ErrorMessage::new(
                     format!(
                         "expected a name for a variable of type `{}`, not a type constructor",
                         name
@@ -705,6 +734,52 @@ impl<'a> TypeChecker<'a> {
             },
             Pattern::Unknown(_) => DiagnosticResult::ok(HashMap::new()),
             Pattern::Function { .. } => unimplemented!(),
+        }
+    }
+
+    /// Replaces named type parameters e.g. `a` with their concrete types.
+    /// For example, calling this function on `Just a`, when `named_type_parameters = [a]` and `concrete_type_parameters = [Bool]` gives `Just Bool`.
+    fn replace_type_variables(
+        named_type_parameters: &[IdentifierP],
+        concrete_type_parameters: &[Type],
+        ty: Type,
+    ) -> Type {
+        match ty {
+            Type::Named { name, parameters } => Type::Named {
+                name,
+                parameters: parameters
+                    .into_iter()
+                    .map(|param| {
+                        Self::replace_type_variables(
+                            named_type_parameters,
+                            concrete_type_parameters,
+                            param,
+                        )
+                    })
+                    .collect(),
+            },
+            Type::Function(l, r) => Type::Function(
+                Box::new(Self::replace_type_variables(
+                    named_type_parameters,
+                    concrete_type_parameters,
+                    *l,
+                )),
+                Box::new(Self::replace_type_variables(
+                    named_type_parameters,
+                    concrete_type_parameters,
+                    *r,
+                )),
+            ),
+            Type::Variable(name) => {
+                // Is this type variable in our list of named type variables?
+                if let Some((i, _)) = named_type_parameters.iter().enumerate().find(|(_, param)| param.name == name) {
+                    concrete_type_parameters[i].clone()
+                } else {
+                    // This was not in the list; just return it verbatim.
+                    Type::Variable(name)
+                }
+            },
+            ty @ Type::Unknown(_) => ty,
         }
     }
 

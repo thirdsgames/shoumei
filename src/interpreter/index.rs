@@ -7,7 +7,7 @@ use std::collections::{hash_map::Entry, HashMap, HashSet};
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
 use super::{
-    parser::ModuleP,
+    parser::{IdentifierP, ModuleP},
     type_resolve::{resolve_typep, Type},
     types::{DefinedName, ProjectTypesC},
     ModulePath, QualifiedName, Range,
@@ -22,6 +22,30 @@ pub struct ModuleIndex {
     /// Maps type constructor names onto the types that they construct.
     pub type_ctors: HashMap<String, String>,
     pub symbols: HashMap<String, SymbolI>,
+}
+
+impl ModuleIndex {
+    pub fn get_type_ctor_args(&self, type_ctor_name: &str) -> Vec<Type> {
+        let mut ty = &self.symbols[type_ctor_name].symbol_type;
+        let mut args = Vec::new();
+        while let Type::Function(l, r) = ty {
+            args.push((**l).clone());
+            ty = r;
+        }
+        // Check that we've extracted all args correctly.
+        match ty {
+            Type::Named { name, .. } => {
+                if name.name != self.type_ctors[type_ctor_name] {
+                    panic!(
+                        "did not give correct type: {} != {}",
+                        name.name, self.type_ctors[type_ctor_name]
+                    );
+                }
+            }
+            _ => panic!("did not give named value"),
+        }
+        args
+    }
 }
 
 pub type ProjectIndex = HashMap<ModulePath, ModuleIndex>;
@@ -44,10 +68,17 @@ pub enum TypeDeclarationTypeI {
 pub struct DataI {
     /// Where was this data statement written?
     pub range: Range,
+    pub type_params: Vec<IdentifierP>,
     /// A list of all the type constructors for a `data` statement. For example, in `data Bool = True | False`, the two
     /// type constructors are `True` and `False`.
     /// Each type constructor is a function `... -> a`, where `a` is the type in the `data` declaration, defined in this module.
-    pub type_ctors: Vec<String>,
+    pub type_ctors: Vec<TypeConstructorI>,
+}
+
+#[derive(Debug)]
+pub struct TypeConstructorI {
+    pub name: String,
+    pub arguments: Vec<Type>,
 }
 
 /// A top-level symbol, i.e. a `def` block.
@@ -125,10 +156,7 @@ pub fn index(
             parameters: data
                 .type_params
                 .iter()
-                .map(|param| Type::Variable {
-                    name: param.name.clone(),
-                    parameters: Vec::new(),
-                })
+                .map(|param| Type::Variable(param.name.clone()))
                 .collect(),
         };
 
@@ -207,18 +235,35 @@ pub fn index(
                     }
                 }
 
-                let datai = DataI {
-                    range: data.identifier.range,
-                    type_ctors: data
-                        .type_ctors
-                        .iter()
-                        .map(|type_ctor| type_ctor.id.name.clone())
-                        .collect(),
-                };
-                vacant.insert(TypeDeclarationI {
-                    name: data.identifier.clone().into(),
-                    decl_type: TypeDeclarationTypeI::Data(datai),
-                });
+                let type_ctors = data
+                    .type_ctors
+                    .iter()
+                    .map(|type_ctor| {
+                        type_ctor
+                            .arguments
+                            .iter()
+                            .map(|arg| resolve_typep(module_path, arg, &type_params, project_types))
+                            .collect::<DiagnosticResult<Vec<_>>>()
+                            .map(|arguments| TypeConstructorI {
+                                name: type_ctor.id.name.clone(),
+                                arguments,
+                            })
+                    })
+                    .collect::<DiagnosticResult<Vec<_>>>();
+                let (_, mut inner_messages) = type_ctors
+                    .map(|type_ctors| {
+                        let datai = DataI {
+                            range: data.identifier.range,
+                            type_params: data.type_params.clone(),
+                            type_ctors,
+                        };
+                        vacant.insert(TypeDeclarationI {
+                            name: data.identifier.clone().into(),
+                            decl_type: TypeDeclarationTypeI::Data(datai),
+                        });
+                    })
+                    .destructure();
+                messages.append(&mut inner_messages);
             }
         }
     }

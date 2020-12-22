@@ -25,8 +25,8 @@ pub enum Type {
     /// Functions with more arguments, e.g. `a -> b -> c` are represented as
     /// curried functions, e.g. `a -> (b -> c)`.
     Function(Box<Type>, Box<Type>),
-    /// A type variable, like `a` or `m a`.
-    Variable { name: String, parameters: Vec<Type> },
+    /// A type variable, like `a`. Type variables may not contain parameters.
+    Variable(String),
     /// An unknown type, used for intermediate values of expressions that we don't know the type of.
     /// Create this using `new_unknown`.
     Unknown(u64),
@@ -60,10 +60,7 @@ impl Type {
                             ..
                         } => !inner_params.is_empty(),
                         Type::Function(_, _) => true,
-                        Type::Variable {
-                            parameters: inner_params,
-                            ..
-                        } => !inner_params.is_empty(),
+                        Type::Variable(_) => false,
                         Type::Unknown(_) => false,
                     };
                     write!(f, " ")?;
@@ -76,7 +73,7 @@ impl Type {
                 right.fmt_proper(f, false)?;
             }
             Type::Unknown(_) => write!(f, "_")?,
-            Type::Variable { name, parameters } => write!(f, "{}", name)?,
+            Type::Variable(name) => write!(f, "{}", name)?,
         };
         if parenthesise {
             write!(f, ")")?;
@@ -102,13 +99,15 @@ pub fn resolve_typep(
     match typep {
         TypeP::Named { identifier, args } => {
             if type_params.contains(&identifier.name) {
-                args.iter()
-                    .map(|arg| resolve_typep(module_path, arg, type_params, project_types))
-                    .collect::<DiagnosticResult<Vec<_>>>()
-                    .map(|parameters| Type::Variable {
-                        name: identifier.name.clone(),
-                        parameters,
-                    })
+                if args.is_empty() {
+                    DiagnosticResult::ok(Type::Variable(identifier.name.clone()))
+                } else {
+                    DiagnosticResult::ok_with(Type::Variable(identifier.name.clone()), ErrorMessage::new(
+                        String::from("unexpected parameters on this type variable"),
+                        Severity::Error,
+                        Diagnostic::at(module_path.clone(), args[0].range())
+                    ))
+                }
             } else {
                 resolve_type_identifier(module_path, identifier, project_types).bind(|name| {
                     args.iter()

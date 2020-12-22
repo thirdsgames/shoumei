@@ -19,9 +19,12 @@ data Maybe a = Just a | Nothing
 data Chain a = Chain (Maybe (Maybe a)) | Empty
 
 def and2 : Maybe Unit -> Bool -> Maybe Unit
-    and2 (Just _) True = Just Unit
-    and2 _ _ = Nothing
+    and2 (Just Unit) True = Just Unit
+    and2 Nothing _ = Nothing
 
 def unchain : Chain (Maybe (Maybe Bool)) -> Maybe Bool
     unchain (Chain (Just (Just a))) = Just a
     unchain _ = Nothing
+
+def untable : TruthTable -> Bool
+    untable (TruthTable a b c d) = a
