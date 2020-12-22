@@ -286,11 +286,13 @@ where
 {
     let mut messages = Vec::new();
     let mut arguments = Vec::new();
-    while peek_token(line, |token| !matches!(token.token_type, TokenType::TypeOr | TokenType::Arrow))
-        || matches!(line.peek(), Some(TokenTree::Tree { .. }))
+    while peek_token(line, |token| {
+        !matches!(token.token_type, TokenType::TypeOr | TokenType::Arrow)
+    }) || matches!(line.peek(), Some(TokenTree::Tree { .. }))
     {
         // We have another type to parse.
-        let (arg, mut inner_messages) = parse_type(module_path, line, end_of_line, true).destructure();
+        let (arg, mut inner_messages) =
+            parse_type(module_path, line, end_of_line, true).destructure();
         if let Some(arg) = arg {
             arguments.push(arg);
         }

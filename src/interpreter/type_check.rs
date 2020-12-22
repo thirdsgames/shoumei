@@ -1,7 +1,7 @@
 //! Performs type deduction and type checking of expressions and patterns.
 
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap},
     fmt::Display,
 };
 
@@ -12,7 +12,7 @@ use super::{
     index_resolve::{resolve_symbol, resolve_type_constructor, TypeConstructorInvocation},
     parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP},
     type_deduce::deduce_expr_type,
-    type_resolve::{resolve_typep, Type},
+    type_resolve::Type,
     types::{TypeDeclarationC, TypeDeclarationTypeC},
     Location, ModulePath, QualifiedName, Range,
 };
@@ -224,7 +224,23 @@ impl PatternExhaustionCheck {
                     for type_ctor_name in &datai.type_ctors {
                         if type_ctor_name == &type_ctor.type_ctor {
                             // This is the type constructor we want to find the complement of.
-                            // TODO when we have data in our data types, compute the complement of this data here.
+                            // The complement of a type constructor e.g. `Foo a b c` is the intersection of all possible combinations of
+                            // complements of a, b and c except for `Foo a b c` itself. In this example, it would be
+                            // - Foo comp(a) _ _
+                            // - Foo a comp(b) _
+                            // - Foo a b comp(c)
+                            complement.extend(
+                                PatternExhaustionCheck::complement_args(project_index, args)
+                                    .into_iter()
+                                    .map(|arg_list| Pattern::TypeConstructor {
+                                        type_ctor: TypeConstructorInvocation {
+                                            data_type: type_ctor.data_type.clone(),
+                                            type_ctor: type_ctor_name.clone(),
+                                            range: Location { line: 0, col: 0 }.into(),
+                                        },
+                                        args: arg_list,
+                                    }),
+                            );
                         } else {
                             // Instance a generic pattern for this type constructor.
                             complement.push(Pattern::TypeConstructor {

@@ -192,7 +192,8 @@ pub fn index(
                             // Probably could have used a fold, but this is good for now.
                             let mut type_ctor_type = data_type.clone();
                             while let Some(last_type) = arg_types.pop() {
-                                type_ctor_type = Type::Function(Box::new(last_type), Box::new(type_ctor_type));
+                                type_ctor_type =
+                                    Type::Function(Box::new(last_type), Box::new(type_ctor_type));
                             }
 
                             let symbol = SymbolI {

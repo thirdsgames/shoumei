@@ -21,3 +21,7 @@ data Chain a = Chain (Maybe (Maybe a)) | Empty
 def and2 : Maybe Unit -> Bool -> Maybe Unit
     and2 (Just _) True = Just Unit
     and2 _ _ = Nothing
+
+def unchain : Chain (Maybe (Maybe Bool)) -> Maybe Bool
+    unchain (Chain (Just (Just a))) = Just a
+    unchain _ = Nothing
