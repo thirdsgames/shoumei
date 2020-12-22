@@ -13,7 +13,6 @@ use super::{
     parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP},
     type_deduce::deduce_expr_type,
     type_resolve::Type,
-    types::{TypeDeclarationC, TypeDeclarationTypeC},
     Location, ModulePath, QualifiedName, Range,
 };
 
@@ -218,49 +217,46 @@ impl PatternExhaustionCheck {
                 // - `a` where `a` is any other type constructor for the same type.
                 let data_type_decl = &project_index[&type_ctor.data_type.module_path].types
                     [&type_ctor.data_type.name];
-                if let TypeDeclarationTypeI::Data(datai) = &data_type_decl.decl_type {
-                    // Loop through all of the type constructors.
-                    let mut complement = Vec::new();
-                    for known_type_ctor in &datai.type_ctors {
-                        if known_type_ctor.name == type_ctor.type_ctor {
-                            // This is the type constructor we want to find the complement of.
-                            // The complement of a type constructor e.g. `Foo a b c` is the intersection of all possible combinations of
-                            // complements of a, b and c except for `Foo a b c` itself. In this example, it would be
-                            // - Foo comp(a) _ _
-                            // - Foo a comp(b) _
-                            // - Foo a b comp(c)
-                            complement.extend(
-                                PatternExhaustionCheck::complement_args(project_index, args)
-                                    .into_iter()
-                                    .map(|arg_list| Pattern::TypeConstructor {
-                                        type_ctor: TypeConstructorInvocation {
-                                            data_type: type_ctor.data_type.clone(),
-                                            type_ctor: known_type_ctor.name.clone(),
-                                            range: Location { line: 0, col: 0 }.into(),
-                                        },
-                                        args: arg_list,
-                                    }),
-                            );
-                        } else {
-                            // Instance a generic pattern for this type constructor.
-                            complement.push(Pattern::TypeConstructor {
-                                type_ctor: TypeConstructorInvocation {
-                                    data_type: type_ctor.data_type.clone(),
-                                    type_ctor: known_type_ctor.name.clone(),
-                                    range: Location { line: 0, col: 0 }.into(),
-                                },
-                                args: known_type_ctor
-                                    .arguments
-                                    .iter()
-                                    .map(|_| Pattern::Unknown(Location { line: 0, col: 0 }.into()))
-                                    .collect(),
-                            });
-                        }
+                let TypeDeclarationTypeI::Data(datai) = &data_type_decl.decl_type;
+                // Loop through all of the type constructors.
+                let mut complement = Vec::new();
+                for known_type_ctor in &datai.type_ctors {
+                    if known_type_ctor.name == type_ctor.type_ctor {
+                        // This is the type constructor we want to find the complement of.
+                        // The complement of a type constructor e.g. `Foo a b c` is the intersection of all possible combinations of
+                        // complements of a, b and c except for `Foo a b c` itself. In this example, it would be
+                        // - Foo comp(a) _ _
+                        // - Foo a comp(b) _
+                        // - Foo a b comp(c)
+                        complement.extend(
+                            PatternExhaustionCheck::complement_args(project_index, args)
+                                .into_iter()
+                                .map(|arg_list| Pattern::TypeConstructor {
+                                    type_ctor: TypeConstructorInvocation {
+                                        data_type: type_ctor.data_type.clone(),
+                                        type_ctor: known_type_ctor.name.clone(),
+                                        range: Location { line: 0, col: 0 }.into(),
+                                    },
+                                    args: arg_list,
+                                }),
+                        );
+                    } else {
+                        // Instance a generic pattern for this type constructor.
+                        complement.push(Pattern::TypeConstructor {
+                            type_ctor: TypeConstructorInvocation {
+                                data_type: type_ctor.data_type.clone(),
+                                type_ctor: known_type_ctor.name.clone(),
+                                range: Location { line: 0, col: 0 }.into(),
+                            },
+                            args: known_type_ctor
+                                .arguments
+                                .iter()
+                                .map(|_| Pattern::Unknown(Location { line: 0, col: 0 }.into()))
+                                .collect(),
+                        });
                     }
-                    complement
-                } else {
-                    panic!("was not data type");
                 }
+                complement
             }
             Pattern::Function { param_types, args } => {
                 // The complement of a function invocation e.g. `foo a b c` is the intersection of all possible combinations of
@@ -412,13 +408,11 @@ impl PatternExhaustionCheck {
 
 pub fn check(
     module_path: &ModulePath,
-    project_types: &HashMap<ModulePath, HashMap<String, TypeDeclarationC>>,
     project_index: &HashMap<ModulePath, ModuleIndex>,
     module: ModuleP,
 ) -> DiagnosticResult<Module> {
     let type_checker = TypeChecker {
         module_path,
-        project_types,
         project_index,
         messages: Vec::new(),
     };
@@ -427,7 +421,6 @@ pub fn check(
 
 struct TypeChecker<'a> {
     module_path: &'a ModulePath,
-    project_types: &'a HashMap<ModulePath, HashMap<String, TypeDeclarationC>>,
     project_index: &'a HashMap<ModulePath, ModuleIndex>,
 
     messages: Vec<ErrorMessage>,
@@ -462,7 +455,6 @@ impl<'a> TypeChecker<'a> {
         let mut definitions = HashMap::<String, Definition>::new();
 
         for definition in module.definitions {
-            let symbol_type = definition.symbol_type;
             let cases = definition.cases;
             let def_ident = definition.identifier;
 
@@ -622,7 +614,7 @@ impl<'a> TypeChecker<'a> {
                 self.parse_expr(bound_variables, *left).bind(|left| {
                     self.parse_expr(bound_variables, *right)
                         .map(|right| Expression {
-                            ty: Type::new_unknown(),
+                            ty: Type::Unknown,
                             contents: ExpressionContents::Apply(Box::new(left), Box::new(right)),
                         })
                 })
@@ -666,12 +658,10 @@ impl<'a> TypeChecker<'a> {
                         // Find the original list of named type parameters. We can then create a bijective correspondence
                         // between the list of `concrete_type_parameters` given and the list of `named_type_parameters`,
                         // so we can identify which type parameter has which value.
-                        let named_type_parameters =
-                            if let TypeDeclarationTypeI::Data(datai) = &data_type_decl.decl_type {
-                                &datai.type_params
-                            } else {
-                                panic!("was not data type")
-                            };
+                        let named_type_parameters = {
+                            let TypeDeclarationTypeI::Data(datai) = &data_type_decl.decl_type;
+                            &datai.type_params
+                        };
 
                         // Find the list of parameters for the type constructor that we're creating.
                         let expected_parameters = self.project_index[&expected_name.module_path]
@@ -722,7 +712,7 @@ impl<'a> TypeChecker<'a> {
                     Severity::Error,
                     Diagnostic::at(self.module_path.clone(), type_ctor.range),
                 )),
-                Type::Unknown(_) => panic!("expected type must be known"),
+                Type::Unknown => panic!("expected type must be known"),
                 Type::Variable(name) => DiagnosticResult::fail(ErrorMessage::new(
                     format!(
                         "expected a name for a variable of type `{}`, not a type constructor",
@@ -784,8 +774,8 @@ impl<'a> TypeChecker<'a> {
                     Type::Variable(name)
                 }
             }
-            ty @ Type::Unknown(_) => ty,
-            Type::Quantified { quantifiers, ty } => unimplemented!(),
+            ty @ Type::Unknown => ty,
+            Type::Quantified { .. } => unimplemented!(),
         }
     }
 
@@ -1006,7 +996,7 @@ fn get_args_of_type(symbol_type: &Type) -> (Vec<Type>, Type) {
             args.insert(0, *left.clone());
             (args, out)
         }
-        Type::Unknown(_) => panic!("type must be known"),
+        Type::Unknown => panic!("type must be known"),
         Type::Variable { .. } => (Vec::new(), symbol_type.clone()),
         Type::Quantified { ty, .. } => get_args_of_type(&ty),
     }

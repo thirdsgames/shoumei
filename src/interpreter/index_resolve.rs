@@ -28,19 +28,16 @@ pub fn resolve_type_constructor(
     let module_index = &project_index[module_path];
     match module_index.type_ctors.get(&identifier.name) {
         Some(data_name) => {
-            if let TypeDeclarationTypeI::Data(datai) = &module_index.types[data_name].decl_type {
-                DiagnosticResult::ok(TypeConstructorInvocation {
-                    data_type: QualifiedName {
-                        module_path: module_path.clone(),
-                        name: data_name.clone(),
-                        range: datai.range,
-                    },
-                    type_ctor: identifier.name.clone(),
-                    range: identifier.range,
-                })
-            } else {
-                panic!("type constructor was for a non-data type");
-            }
+            let TypeDeclarationTypeI::Data(datai) = &module_index.types[data_name].decl_type;
+            DiagnosticResult::ok(TypeConstructorInvocation {
+                data_type: QualifiedName {
+                    module_path: module_path.clone(),
+                    name: data_name.clone(),
+                    range: datai.range,
+                },
+                type_ctor: identifier.name.clone(),
+                range: identifier.range,
+            })
         }
         None => DiagnosticResult::fail(ErrorMessage::new(
             String::from("could not resolve type constructor"),

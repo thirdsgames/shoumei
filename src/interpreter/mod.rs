@@ -205,13 +205,13 @@ pub fn parse(module_path: &ModulePath) -> DiagnosticResult<type_check::Module> {
                 project_index.insert(module_path.clone(), index);
                 project_index
             });
-            project_index.map(|project_index| (project_types, project_index, module))
+            project_index.map(|project_index| (project_index, module))
         })
         .deny()
-        .bind(|(project_types, project_index, module)| {
-            // We've now computed the project types and the project index.
+        .bind(|(project_index, module)| {
+            // We've now computed the project index.
             // So we can start to type check expressions and so on.
-            type_check::check(module_path, &project_types, &project_index, module)
+            type_check::check(module_path, &project_index, module)
         })
         .deny()
 }

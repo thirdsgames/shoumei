@@ -272,6 +272,5 @@ pub fn index(
         type_ctors,
         symbols,
     };
-    println!("Constructed index: {:#?}", index);
     DiagnosticResult::ok_with_many(index, messages)
 }
