@@ -20,7 +20,7 @@ data Chain a = Chain (Maybe (Maybe a)) | Empty
 
 def and2 : Maybe Unit -> Bool -> Maybe Unit
     and2 (Just Unit) True = Just Unit
-    and2 Nothing _ = Nothing
+    and2 _ _ = Nothing
 
 def unchain : Chain (Maybe (Maybe Bool)) -> Maybe Bool
     unchain (Chain (Just (Just a))) = Just a
@@ -28,3 +28,7 @@ def unchain : Chain (Maybe (Maybe Bool)) -> Maybe Bool
 
 def untable : TruthTable -> Bool
     untable (TruthTable a b c d) = a
+
+def map : forall a b . (a -> b) -> Maybe a -> Maybe b
+    map f (Just x) = Just (f x)
+    map f Nothing = Nothing

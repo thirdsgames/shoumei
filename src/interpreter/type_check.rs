@@ -731,6 +731,7 @@ impl<'a> TypeChecker<'a> {
                     Severity::Error,
                     Diagnostic::at(self.module_path.clone(), type_ctor.range),
                 )),
+                Type::Quantified { .. } => unimplemented!(),
             },
             Pattern::Unknown(_) => DiagnosticResult::ok(HashMap::new()),
             Pattern::Function { .. } => unimplemented!(),
@@ -772,14 +773,19 @@ impl<'a> TypeChecker<'a> {
             ),
             Type::Variable(name) => {
                 // Is this type variable in our list of named type variables?
-                if let Some((i, _)) = named_type_parameters.iter().enumerate().find(|(_, param)| param.name == name) {
+                if let Some((i, _)) = named_type_parameters
+                    .iter()
+                    .enumerate()
+                    .find(|(_, param)| param.name == name)
+                {
                     concrete_type_parameters[i].clone()
                 } else {
                     // This was not in the list; just return it verbatim.
                     Type::Variable(name)
                 }
-            },
+            }
             ty @ Type::Unknown(_) => ty,
+            Type::Quantified { quantifiers, ty } => unimplemented!(),
         }
     }
 
@@ -1002,6 +1008,7 @@ fn get_args_of_type(symbol_type: &Type) -> (Vec<Type>, Type) {
         }
         Type::Unknown(_) => panic!("type must be known"),
         Type::Variable { .. } => (Vec::new(), symbol_type.clone()),
+        Type::Quantified { ty, .. } => get_args_of_type(&ty),
     }
 }
 

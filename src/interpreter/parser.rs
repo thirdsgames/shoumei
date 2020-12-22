@@ -37,6 +37,11 @@ pub enum TypeP {
     /// Functions with more arguments, e.g. `a -> b -> c` are represented as
     /// curried functions, e.g. `a -> (b -> c)`.
     Function(Box<TypeP>, Box<TypeP>),
+    /// A type quantified over one or more type parameters.
+    Quantified {
+        quantifiers: Vec<IdentifierP>,
+        ty: Box<TypeP>,
+    },
 }
 
 impl TypeP {
@@ -46,6 +51,9 @@ impl TypeP {
                 .iter()
                 .fold(identifier.range, |acc, i| acc.union(i.range())),
             TypeP::Function(left, right) => left.range().union(right.range()),
+            TypeP::Quantified { quantifiers, ty } => quantifiers
+                .iter()
+                .fold(ty.range(), |acc, i| acc.union(i.range)),
         }
     }
 }
@@ -270,13 +278,13 @@ where
     I: Iterator<Item = TokenTree>,
 {
     parse_identifier(module_path, line, end_of_line).bind(|id| {
-        parse_type_args(module_path, line, end_of_line)
+        parse_types(module_path, line, end_of_line)
             .map(|arguments| TypeConstructorP { id, arguments })
     })
 }
 
-/// `type_args ::= type*`
-fn parse_type_args<I>(
+/// `types ::= type*`
+fn parse_types<I>(
     module_path: &ModulePath,
     line: &mut Peekable<I>,
     end_of_line: Location,
@@ -301,7 +309,7 @@ where
     DiagnosticResult::ok_with_many(arguments, messages)
 }
 
-/// `def ::= identifier ":" type "\n" def_cases`
+/// `def ::= identifier ":" quantifier? type "\n" def_cases`
 fn parse_def<I>(
     module_path: &ModulePath,
     mut line: Peekable<I>,
@@ -320,12 +328,20 @@ where
                 |token| matches!(token.token_type, TokenType::Type),
                 "expected type symbol",
             )
-            .bind(|_| parse_type(module_path, &mut line, end_of_line, false))
-            .bind(|symbol_type| {
-                assert_end_of_line(module_path, line).map(|_| DefinitionP {
-                    identifier,
-                    symbol_type,
-                    cases: Vec::new(),
+            .bind(|_| parse_quantifier(module_path, &mut line, end_of_line))
+            .bind(|quantifier| {
+                parse_type(module_path, &mut line, end_of_line, false).bind(|mut symbol_type| {
+                    if !quantifier.is_empty() {
+                        symbol_type = TypeP::Quantified {
+                            quantifiers: quantifier,
+                            ty: Box::new(symbol_type),
+                        }
+                    }
+                    assert_end_of_line(module_path, line).map(|_| DefinitionP {
+                        identifier,
+                        symbol_type,
+                        cases: Vec::new(),
+                    })
                 })
             })
         })
@@ -358,6 +374,53 @@ where
                 ),
             }
         })
+}
+
+/// `quantifier = "forall" identifier* "."`
+fn parse_quantifier<I>(
+    module_path: &ModulePath,
+    line: &mut Peekable<I>,
+    end_of_line: Location,
+) -> DiagnosticResult<Vec<IdentifierP>>
+where
+    I: Iterator<Item = TokenTree>,
+{
+    if peek_token(line, |token| matches!(token.token_type, TokenType::Forall)) {
+        parse_token(
+            module_path,
+            line,
+            end_of_line,
+            |token| matches!(token.token_type, TokenType::Forall),
+            "unreachable",
+        )
+        .bind(|_| {
+            let mut messages = Vec::new();
+            let mut identifiers = Vec::new();
+            while peek_token(line, |token| {
+                matches!(token.token_type, TokenType::Identifier(_))
+            }) {
+                let (identifier, mut inner_messages) =
+                    parse_identifier(module_path, line, end_of_line).destructure();
+                if let Some(identifier) = identifier {
+                    identifiers.push(identifier);
+                }
+                inner_messages.append(&mut messages);
+            }
+            DiagnosticResult::ok_with_many(identifiers, messages).bind(|identifiers| {
+                parse_token(
+                    module_path,
+                    line,
+                    end_of_line,
+                    |token| matches!(token.token_type, TokenType::Dot),
+                    "expected dot",
+                )
+                .map(|_| identifiers)
+            })
+        })
+    } else {
+        // No variables were quantified over.
+        DiagnosticResult::ok(Vec::new())
+    }
 }
 
 /// `def_cases ::= (def_case)+`
@@ -530,7 +593,7 @@ where
                     args: Vec::new(),
                 })
             } else {
-                identifier.bind(|identifier| parse_type_args(module_path, line, end_of_line).map(|args| TypeP::Named {
+                identifier.bind(|identifier| parse_types(module_path, line, end_of_line).map(|args| TypeP::Named {
                     identifier,
                     args,
                 }))

@@ -12,12 +12,14 @@ pub enum TokenType {
     Type,
     Arrow,
     Underscore,
+    Dot,
 
     LeftParenthesis,
     RightParenthesis,
 
     Data,
     Def,
+    Forall,
 
     Identifier(String),
 }
@@ -142,6 +144,7 @@ fn token_type_alphabetic(s: String) -> TokenType {
     match s.as_str() {
         "data" => TokenType::Data,
         "def" => TokenType::Def,
+        "forall" => TokenType::Forall,
         _ => TokenType::Identifier(s),
     }
 }
@@ -155,6 +158,7 @@ fn token_type_symbol(s: String) -> TokenType {
         ":" => TokenType::Type,
         "->" => TokenType::Arrow,
         "_" => TokenType::Underscore,
+        "." => TokenType::Dot,
         _ => TokenType::Identifier(s),
     }
 }

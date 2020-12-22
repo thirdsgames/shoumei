@@ -126,7 +126,6 @@ pub fn index(
             }
             Entry::Vacant(vacant) => {
                 // Let's add this definition into the map.
-                // TODO when definitions can have `forall` type parameters, we should update this.
                 let symbol_type = resolve_typep(
                     module_path,
                     &definition.symbol_type,

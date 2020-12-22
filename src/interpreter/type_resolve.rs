@@ -30,6 +30,11 @@ pub enum Type {
     /// An unknown type, used for intermediate values of expressions that we don't know the type of.
     /// Create this using `new_unknown`.
     Unknown(u64),
+    /// A type quantified over some type variables, e.g. `forall a . a`
+    Quantified {
+        quantifiers: Vec<String>,
+        ty: Box<Type>,
+    },
 }
 
 static UNKNOWN_TYPE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -62,6 +67,7 @@ impl Type {
                         Type::Function(_, _) => true,
                         Type::Variable(_) => false,
                         Type::Unknown(_) => false,
+                        Type::Quantified { .. } => true,
                     };
                     write!(f, " ")?;
                     param.fmt_proper(f, should_parenthesise)?;
@@ -74,6 +80,13 @@ impl Type {
             }
             Type::Unknown(_) => write!(f, "_")?,
             Type::Variable(name) => write!(f, "{}", name)?,
+            Type::Quantified { quantifiers, ty } => {
+                write!(f, "forall")?;
+                for quantifier in quantifiers {
+                    write!(f, " {}", quantifier)?;
+                }
+                write!(f, " . {}", ty)?;
+            }
         };
         if parenthesise {
             write!(f, ")")?;
@@ -102,11 +115,14 @@ pub fn resolve_typep(
                 if args.is_empty() {
                     DiagnosticResult::ok(Type::Variable(identifier.name.clone()))
                 } else {
-                    DiagnosticResult::ok_with(Type::Variable(identifier.name.clone()), ErrorMessage::new(
-                        String::from("unexpected parameters on this type variable"),
-                        Severity::Error,
-                        Diagnostic::at(module_path.clone(), args[0].range())
-                    ))
+                    DiagnosticResult::ok_with(
+                        Type::Variable(identifier.name.clone()),
+                        ErrorMessage::new(
+                            String::from("unexpected parameters on this type variable"),
+                            Severity::Error,
+                            Diagnostic::at(module_path.clone(), args[0].range()),
+                        ),
+                    )
                 }
             } else {
                 resolve_type_identifier(module_path, identifier, project_types).bind(|name| {
@@ -121,6 +137,30 @@ pub fn resolve_typep(
             resolve_typep(module_path, &left, type_params, project_types).bind(|left| {
                 resolve_typep(module_path, &right, type_params, project_types)
                     .map(|right| Type::Function(Box::new(left), Box::new(right)))
+            })
+        }
+        TypeP::Quantified { quantifiers, ty } => {
+            let mut new_params = type_params.clone();
+            new_params.extend(quantifiers.iter().map(|id| id.name.clone()));
+            resolve_typep(module_path, ty, &new_params, project_types).map(|ty| {
+                // Now that we've resolved the type with respect to these type parameters, we need to re-quantify over these type variables.
+                match ty {
+                    Type::Quantified {
+                        quantifiers: resolved_quantifiers,
+                        ty: resolved_ty,
+                    } => Type::Quantified {
+                        quantifiers: quantifiers
+                            .iter()
+                            .map(|id| id.name.clone())
+                            .chain(resolved_quantifiers)
+                            .collect(),
+                        ty: resolved_ty,
+                    },
+                    ty => Type::Quantified {
+                        quantifiers: quantifiers.iter().map(|id| id.name.clone()).collect(),
+                        ty: Box::new(ty),
+                    },
+                }
             })
         }
     }
