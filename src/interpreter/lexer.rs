@@ -21,6 +21,10 @@ pub enum TokenType {
     Def,
     Forall,
 
+    Lambda,
+    Let,
+    In,
+
     Identifier(String),
 }
 
@@ -124,7 +128,7 @@ fn lex_token(
         _ => {
             if ch.is_alphanumeric() {
                 let (identifier, range) =
-                    consume_predicate_one(line, chars, |c| c.is_alphanumeric());
+                    consume_predicate_one(line, chars, |c| c.is_alphanumeric() || c == '_');
                 let token_type = token_type_alphabetic(identifier);
                 DiagnosticResult::ok(Token { token_type, range })
             } else {
@@ -145,6 +149,9 @@ fn token_type_alphabetic(s: String) -> TokenType {
         "data" => TokenType::Data,
         "def" => TokenType::Def,
         "forall" => TokenType::Forall,
+        "lambda" => TokenType::Lambda,
+        "let" => TokenType::Let,
+        "in" => TokenType::In,
         _ => TokenType::Identifier(s),
     }
 }

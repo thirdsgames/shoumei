@@ -426,8 +426,8 @@ struct TypeChecker<'a> {
     messages: Vec<ErrorMessage>,
 }
 
-/// A variable bound by the definition of a function.
-#[derive(Debug)]
+/// A variable bound by the definition of a function or some abstraction e.g. a lambda or a let inside it.
+#[derive(Debug, Clone)]
 pub struct BoundVariable {
     pub range: Range,
     pub var_type: Type,
@@ -448,6 +448,17 @@ pub enum ExpressionContents {
     /// Apply the left hand side to the right hand side, e.g. `a b`.
     /// More complicated expressions e.g. `a b c d` can be desugared into `((a b) c) d`.
     Apply(Box<Expression>, Box<Expression>),
+    /// A lambda abstraction, specifically `lambda params -> expr`.
+    Lambda {
+        params: Vec<IdentifierP>,
+        expr: Box<Expression>,
+    },
+    /// A let expression, specifically `let identifier = left_expr in right_expr`.
+    Let {
+        identifier: IdentifierP,
+        left_expr: Box<Expression>,
+        right_expr: Box<Expression>,
+    },
 }
 
 impl<'a> TypeChecker<'a> {
@@ -559,6 +570,7 @@ impl<'a> TypeChecker<'a> {
         bound_variables
             .bind(|bound_variables| {
                 self.parse_expr(&bound_variables, replacement)
+                    .deny()
                     .bind(|mut expr| {
                         deduce_expr_type(
                             self.module_path,
@@ -624,6 +636,103 @@ impl<'a> TypeChecker<'a> {
                 Severity::Error,
                 Diagnostic::at(self.module_path.clone(), range),
             )),
+            ExpressionP::Lambda { params, expr, .. } => {
+                // This introduces new bound variables, so we'll need to clone and edit the `bound_variables` map.
+                let mut new_bound_variables = (*bound_variables).clone();
+                let mut messages = Vec::new();
+
+                for param in &params {
+                    let IdentifierP { name, range } = param;
+                    match new_bound_variables.entry(name.clone()) {
+                        Entry::Occupied(occupied) => {
+                            messages.push(ErrorMessage::new_with(
+                                String::from("a variable with this name was already defined"),
+                                Severity::Error,
+                                Diagnostic::at(self.module_path.clone(), *range),
+                                HelpMessage {
+                                    message: String::from("previously defined here"),
+                                    help_type: HelpType::Note,
+                                    diagnostic: Diagnostic::at(
+                                        self.module_path.clone(),
+                                        occupied.get().range,
+                                    ),
+                                },
+                            ));
+                        }
+                        Entry::Vacant(vacant) => {
+                            vacant.insert(BoundVariable {
+                                range: *range,
+                                var_type: Type::Unknown,
+                            });
+                        }
+                    }
+                }
+
+                DiagnosticResult::ok_with_many(new_bound_variables, messages).bind(
+                    |new_bound_variables| {
+                        self.parse_expr(&new_bound_variables, *expr)
+                            .map(|expr| Expression {
+                                ty: expr.ty.clone(),
+                                contents: ExpressionContents::Lambda {
+                                    params,
+                                    expr: Box::new(expr),
+                                },
+                            })
+                    },
+                )
+            }
+            ExpressionP::Let {
+                identifier,
+                left_expr,
+                right_expr,
+                ..
+            } => {
+                // This introduces new bound variables, so we'll need to clone and edit the `bound_variables` map.
+                let mut new_bound_variables = (*bound_variables).clone();
+                let mut messages = Vec::new();
+
+                match new_bound_variables.entry(identifier.name.clone()) {
+                    Entry::Occupied(occupied) => {
+                        messages.push(ErrorMessage::new_with(
+                            String::from("a variable with this name was already defined"),
+                            Severity::Error,
+                            Diagnostic::at(self.module_path.clone(), identifier.range),
+                            HelpMessage {
+                                message: String::from("previously defined here"),
+                                help_type: HelpType::Note,
+                                diagnostic: Diagnostic::at(
+                                    self.module_path.clone(),
+                                    occupied.get().range,
+                                ),
+                            },
+                        ));
+                    }
+                    Entry::Vacant(vacant) => {
+                        vacant.insert(BoundVariable {
+                            range: identifier.range,
+                            var_type: Type::Unknown,
+                        });
+                    }
+                }
+
+                DiagnosticResult::ok_with_many(new_bound_variables, messages).bind(
+                    |new_bound_variables| {
+                        self.parse_expr(bound_variables, *left_expr)
+                            .bind(|left_expr| {
+                                self.parse_expr(&new_bound_variables, *right_expr).map(
+                                    |right_expr| Expression {
+                                        ty: right_expr.ty.clone(),
+                                        contents: ExpressionContents::Let {
+                                            identifier,
+                                            left_expr: Box::new(left_expr),
+                                            right_expr: Box::new(right_expr),
+                                        },
+                                    },
+                                )
+                            })
+                    },
+                )
+            }
         }
     }
 
@@ -909,6 +1018,16 @@ impl<'a> TypeChecker<'a> {
                     },
                 ))
             }
+            ExpressionP::Lambda { lambda_token, .. } => DiagnosticResult::fail(ErrorMessage::new(
+                String::from("lambda abstractions are not allowed in patterns"),
+                Severity::Error,
+                Diagnostic::at(self.module_path.clone(), lambda_token),
+            )),
+            ExpressionP::Let { let_token, .. } => DiagnosticResult::fail(ErrorMessage::new(
+                String::from("let expressions are not allowed in patterns"),
+                Severity::Error,
+                Diagnostic::at(self.module_path.clone(), let_token),
+            )),
         }
     }
 
@@ -949,6 +1068,16 @@ impl<'a> TypeChecker<'a> {
                 })
             }),
             ExpressionP::Unknown(range) => DiagnosticResult::ok(Pattern::Unknown(range)),
+            ExpressionP::Lambda { lambda_token, .. } => DiagnosticResult::fail(ErrorMessage::new(
+                String::from("lambda abstractions are not allowed in patterns"),
+                Severity::Error,
+                Diagnostic::at(self.module_path.clone(), lambda_token),
+            )),
+            ExpressionP::Let { let_token, .. } => DiagnosticResult::fail(ErrorMessage::new(
+                String::from("let expressions are not allowed in patterns"),
+                Severity::Error,
+                Diagnostic::at(self.module_path.clone(), let_token),
+            )),
         }
     }
 }

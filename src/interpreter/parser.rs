@@ -103,6 +103,19 @@ pub enum ExpressionP {
     /// Apply the left hand side to the right hand side, e.g. `a b`.
     /// More complicated expressions e.g. `a b c d` can be desugared into `((a b) c) d`.
     Apply(Box<ExpressionP>, Box<ExpressionP>),
+    /// A lambda abstraction, specifically `lambda params -> expr`.
+    Lambda {
+        lambda_token: Range,
+        params: Vec<IdentifierP>,
+        expr: Box<ExpressionP>,
+    },
+    /// A let..in expression, specifically `let identifier = left_expr in right_expr`.
+    Let {
+        let_token: Range,
+        identifier: IdentifierP,
+        left_expr: Box<ExpressionP>,
+        right_expr: Box<ExpressionP>,
+    },
     /// An underscore `_` representing an unknown.
     Unknown(Range),
 }
@@ -113,6 +126,14 @@ impl ExpressionP {
             ExpressionP::Variable(identifier) => identifier.range,
             ExpressionP::Apply(left, right) => left.range().union(right.range()),
             ExpressionP::Unknown(range) => *range,
+            ExpressionP::Lambda {
+                lambda_token, expr, ..
+            } => lambda_token.union(expr.range()),
+            ExpressionP::Let {
+                let_token,
+                right_expr,
+                ..
+            } => let_token.union(right_expr.range()),
         }
     }
 }
@@ -478,6 +499,46 @@ fn parse_expr<I>(
 where
     I: Iterator<Item = TokenTree>,
 {
+    // Check what kind of expression this is.
+    // - variable: one term
+    // - application: many terms, the leftmost one is considered a function applied to terms on the right
+    // - abstraction: a lambda abstraction beginning with the `lambda` keyword
+    // - let: a `let ... in` expression
+    // Any expressions we add to the language in the future must reduce to one of these four
+    // expression types, so that we can apply a Hindley-Milner-like type system solver.
+    if let Some(TokenTree::Token(tk)) = line.peek() {
+        match tk.token_type {
+            TokenType::Lambda => {
+                // This is certainly a lambda expression.
+                // Consume the lambda token, then parse the lambda expression.
+                let token_range = tk.range;
+                line.next();
+                return parse_expr_lambda(module_path, line, end_of_line, token_range);
+            }
+            TokenType::Let => {
+                // This is certainly a let..in expression.
+                // Consume the let token, then parse the lambda expression.
+                let token_range = tk.range;
+                line.next();
+                return parse_expr_let(module_path, line, end_of_line, token_range);
+            }
+            _ => {}
+        }
+    }
+
+    // Default to a variable or application expression, since this will show a decent error message.
+    parse_expr_app(module_path, line, end_of_line)
+}
+
+/// Parses a variable or application expression.
+fn parse_expr_app<I>(
+    module_path: &ModulePath,
+    line: &mut Peekable<I>,
+    end_of_line: Location,
+) -> DiagnosticResult<ExpressionP>
+where
+    I: Iterator<Item = TokenTree>,
+{
     let mut terms = Vec::new();
     while let Some(next_term) = parse_expr_term(module_path, line) {
         terms.push(next_term);
@@ -500,6 +561,81 @@ where
         let first = terms.next().unwrap();
         terms.into_iter().fold(first, |acc, i| {
             ExpressionP::Apply(Box::new(acc), Box::new(i))
+        })
+    })
+}
+
+/// Parses a lambda expression.
+fn parse_expr_lambda<I>(
+    module_path: &ModulePath,
+    line: &mut Peekable<I>,
+    end_of_line: Location,
+    lambda_token: Range,
+) -> DiagnosticResult<ExpressionP>
+where
+    I: Iterator<Item = TokenTree>,
+{
+    let mut params = Vec::new();
+    while peek_token(line, |token| matches!(token.token_type, TokenType::Identifier(_))) {
+        let (value, messages) = parse_identifier(module_path, line, end_of_line).destructure();
+        params.push(DiagnosticResult::ok_with_many(value.unwrap(), messages));
+    }
+
+    DiagnosticResult::sequence(params).bind(|params| {
+        parse_token(
+            module_path,
+            line,
+            end_of_line,
+            |token| matches!(token.token_type, TokenType::Arrow),
+            "expected arrow symbol",
+        )
+        .bind(|_| {
+            parse_expr(module_path, line, end_of_line).map(|expr| ExpressionP::Lambda {
+                lambda_token,
+                params,
+                expr: Box::new(expr),
+            })
+        })
+    })
+}
+
+/// Parses a let expression.
+/// `expr_let ::= identifier = expr "in" expr`
+fn parse_expr_let<I>(
+    module_path: &ModulePath,
+    line: &mut Peekable<I>,
+    end_of_line: Location,
+    let_token: Range,
+) -> DiagnosticResult<ExpressionP>
+where
+    I: Iterator<Item = TokenTree>,
+{
+    parse_identifier(module_path, line, end_of_line).bind(|identifier| {
+        parse_token(
+            module_path,
+            line,
+            end_of_line,
+            |token| matches!(token.token_type, TokenType::Assign),
+            "expected assign symbol",
+        )
+        .bind(|_| {
+            parse_expr(module_path, line, end_of_line).bind(|left_expr| {
+                parse_token(
+                    module_path,
+                    line,
+                    end_of_line,
+                    |token| matches!(token.token_type, TokenType::In),
+                    "expected 'in' keyword",
+                )
+                .bind(|_| {
+                    parse_expr(module_path, line, end_of_line).map(|right_expr| ExpressionP::Let {
+                        let_token,
+                        identifier,
+                        left_expr: Box::new(left_expr),
+                        right_expr: Box::new(right_expr),
+                    })
+                })
+            })
         })
     })
 }

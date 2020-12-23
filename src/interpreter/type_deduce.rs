@@ -21,5 +21,6 @@ pub fn deduce_expr_type(
     expected_type: Type,
     expr: &mut Expression,
 ) -> DiagnosticResult<()> {
+    println!("Deducing type of {:#?}", expr);
     DiagnosticResult::ok(())
 }
