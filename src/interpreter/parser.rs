@@ -576,7 +576,9 @@ where
     I: Iterator<Item = TokenTree>,
 {
     let mut params = Vec::new();
-    while peek_token(line, |token| matches!(token.token_type, TokenType::Identifier(_))) {
+    while peek_token(line, |token| {
+        matches!(token.token_type, TokenType::Identifier(_))
+    }) {
         let (value, messages) = parse_identifier(module_path, line, end_of_line).destructure();
         params.push(DiagnosticResult::ok_with_many(value.unwrap(), messages));
     }

@@ -39,8 +39,8 @@ def id : forall a . a -> a
 def id2 : forall a . a -> a
     id2 = lambda x -> x
 
-def and3 : Bool -> Bool -> Bool
-    and3 a b = let x = and a b in and x x
-
 def lambda_test : Bool -> Bool
     lambda_test a = (lambda b -> and a b) a
+
+def and3 : Bool -> Bool -> Bool
+    and3 a b = let x = and a b in and x x

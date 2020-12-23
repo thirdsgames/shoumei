@@ -4,9 +4,11 @@ use crate::DiagnosticResult;
 
 use super::{
     index::ProjectIndex,
-    type_check::{BoundVariable, Expression},
+    type_check::{
+        BoundVariable, Constraint, Constraints, Expression, ExpressionContents, ExpressionT,
+    },
     type_resolve::Type,
-    ModulePath,
+    Location, ModulePath, QualifiedName,
 };
 
 /// Deduces the type of an expression.
@@ -17,10 +19,20 @@ use super::{
 pub fn deduce_expr_type(
     module_path: &ModulePath,
     project_index: &ProjectIndex,
-    bound_variables: &HashMap<String, BoundVariable>,
+    args: &HashMap<String, BoundVariable>,
     expected_type: Type,
-    expr: &mut Expression,
-) -> DiagnosticResult<()> {
+    expr: ExpressionT,
+    constraints: Constraints,
+) -> DiagnosticResult<Expression> {
     println!("Deducing type of {:#?}", expr);
-    DiagnosticResult::ok(())
+    println!("Constraints: {:#?}", constraints);
+    // We implement the Bottom-Up rules from the above paper.
+    DiagnosticResult::ok(Expression {
+        ty: expected_type,
+        contents: ExpressionContents::Symbol(QualifiedName {
+            module_path: ModulePath(vec!["test".into()]),
+            name: "test".into(),
+            range: Location { line: 0, col: 0 }.into(),
+        }),
+    })
 }

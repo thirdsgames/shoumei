@@ -1,6 +1,10 @@
 //! Resolves an unqualified name into a fully qualified name with type information.
 
-use std::{collections::HashSet, fmt::Display};
+use std::{
+    collections::HashSet,
+    fmt::Display,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
@@ -23,13 +27,23 @@ pub enum Type {
     Function(Box<Type>, Box<Type>),
     /// A type variable, like `a`. Type variables may not contain parameters.
     Variable(String),
-    /// An unknown type, used for intermediate values of expressions that we don't know the type of.
-    Unknown,
     /// A type quantified over some type variables, e.g. `forall a . a`
     Quantified {
         quantifiers: Vec<String>,
         ty: Box<Type>,
     },
+}
+
+/// An unknown type, used for intermediate values of expressions that we don't know the type of.
+/// To generate a new type variable, call `default`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct TypeVariableId(u64);
+static TYPE_VARIABLE_ID_GENERATOR: AtomicU64 = AtomicU64::new(0);
+
+impl Default for TypeVariableId {
+    fn default() -> Self {
+        Self(TYPE_VARIABLE_ID_GENERATOR.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 impl Type {
@@ -54,7 +68,6 @@ impl Type {
                         } => !inner_params.is_empty(),
                         Type::Function(_, _) => true,
                         Type::Variable(_) => false,
-                        Type::Unknown => false,
                         Type::Quantified { .. } => true,
                     };
                     write!(f, " ")?;
@@ -66,7 +79,6 @@ impl Type {
                 write!(f, " -> ")?;
                 right.fmt_proper(f, false)?;
             }
-            Type::Unknown => write!(f, "_")?,
             Type::Variable(name) => write!(f, "{}", name)?,
             Type::Quantified { quantifiers, ty } => {
                 write!(f, "forall")?;

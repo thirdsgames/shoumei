@@ -20,6 +20,7 @@
 //!   After the index has been computed, we should not need to use `P` or `C` data,
 //!   only `I` data should be required.
 //! - `I`: an Index entry for the item.
+//! - `T`: currently being type checked.
 //! - (no suffix): types have been deduced and references have been resolved.
 //!
 //! Using type name suffixes as a form of type state helps to ensure that compiler phases can never leak bad
