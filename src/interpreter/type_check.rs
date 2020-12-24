@@ -37,6 +37,8 @@ impl Display for Module {
 /// A definition for a symbol, i.e. a function or constant.
 #[derive(Debug)]
 pub struct Definition {
+    /// The `forall` definition at the start of this definition.
+    quantifiers: Vec<String>,
     symbol_type: Type,
     cases: Vec<DefinitionCase>,
 }
@@ -535,6 +537,11 @@ impl<'a> TypeChecker<'a> {
                 definitions.insert(
                     def_ident.name,
                     Definition {
+                        quantifiers: definition
+                            .quantifiers
+                            .iter()
+                            .map(|id| id.name.clone())
+                            .collect(),
                         symbol_type: symbol_type.clone(),
                         cases: cases
                             .into_iter()
@@ -701,7 +708,6 @@ impl<'a> TypeChecker<'a> {
                     Severity::Error,
                     Diagnostic::at(self.module_path.clone(), type_ctor.range),
                 )),
-                Type::Quantified { .. } => unimplemented!(),
             },
             Pattern::Unknown(_) => DiagnosticResult::ok(HashMap::new()),
             Pattern::Function { .. } => unimplemented!(),
@@ -754,7 +760,6 @@ impl<'a> TypeChecker<'a> {
                     Type::Variable(name)
                 }
             }
-            Type::Quantified { .. } => unimplemented!(),
         }
     }
 
@@ -996,7 +1001,6 @@ fn get_args_of_type(symbol_type: &Type) -> (Vec<Type>, Type) {
             (args, out)
         }
         Type::Variable { .. } => (Vec::new(), symbol_type.clone()),
-        Type::Quantified { ty, .. } => get_args_of_type(&ty),
     }
 }
 

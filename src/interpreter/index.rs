@@ -129,7 +129,11 @@ pub fn index(
                 let symbol_type = resolve_typep(
                     module_path,
                     &definition.symbol_type,
-                    &HashSet::new(),
+                    &definition
+                        .quantifiers
+                        .iter()
+                        .map(|id| id.name.clone())
+                        .collect(),
                     project_types,
                 );
                 let (symbol_type, mut inner_messages) = symbol_type.destructure();

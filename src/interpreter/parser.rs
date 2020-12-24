@@ -37,11 +37,6 @@ pub enum TypeP {
     /// Functions with more arguments, e.g. `a -> b -> c` are represented as
     /// curried functions, e.g. `a -> (b -> c)`.
     Function(Box<TypeP>, Box<TypeP>),
-    /// A type quantified over one or more type parameters.
-    Quantified {
-        quantifiers: Vec<IdentifierP>,
-        ty: Box<TypeP>,
-    },
 }
 
 impl TypeP {
@@ -51,9 +46,6 @@ impl TypeP {
                 .iter()
                 .fold(identifier.range, |acc, i| acc.union(i.range())),
             TypeP::Function(left, right) => left.range().union(right.range()),
-            TypeP::Quantified { quantifiers, ty } => quantifiers
-                .iter()
-                .fold(ty.range(), |acc, i| acc.union(i.range)),
         }
     }
 }
@@ -84,6 +76,7 @@ pub struct TypeConstructorP {
 #[derive(Debug)]
 pub struct DefinitionP {
     pub identifier: IdentifierP,
+    pub quantifiers: Vec<IdentifierP>,
     pub symbol_type: TypeP,
     pub cases: Vec<DefinitionCaseP>,
 }
@@ -350,16 +343,11 @@ where
                 "expected type symbol",
             )
             .bind(|_| parse_quantifier(module_path, &mut line, end_of_line))
-            .bind(|quantifier| {
-                parse_type(module_path, &mut line, end_of_line, false).bind(|mut symbol_type| {
-                    if !quantifier.is_empty() {
-                        symbol_type = TypeP::Quantified {
-                            quantifiers: quantifier,
-                            ty: Box::new(symbol_type),
-                        }
-                    }
+            .bind(|quantifiers| {
+                parse_type(module_path, &mut line, end_of_line, false).bind(|symbol_type| {
                     assert_end_of_line(module_path, line).map(|_| DefinitionP {
                         identifier,
+                        quantifiers,
                         symbol_type,
                         cases: Vec::new(),
                     })
