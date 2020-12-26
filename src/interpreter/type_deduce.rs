@@ -119,6 +119,13 @@ enum ConstraintEqualityReason {
     Implicit(ConstraintImplicitReason),
     /// This constraint is a generalised version of an explicit instance constraint.
     Explicit(ConstraintExplicitReason),
+    /// The expression was defined to be a specific type.
+    ByDefinition {
+        /// The expression we're type checking.
+        expr: Range,
+        /// The definition that shows what type it must have.
+        definition: Range,
+    },
 }
 
 #[derive(Debug)]
@@ -137,6 +144,7 @@ pub fn deduce_expr_type(
     expr: ExpressionP,
     expected_type: Type,
     quantifiers: &[IdentifierP],
+    definition_identifier_range: Range,
 ) -> DiagnosticResult<Expression> {
     generate_constraints(
         module_path,
@@ -147,10 +155,20 @@ pub fn deduce_expr_type(
         expr,
     )
     .deny()
-    .bind(|expr_type_check| {
+    .bind(|mut expr_type_check| {
         if !expr_type_check.assumptions.0.is_empty() {
             panic!("unresolved assumptions {:#?}", expr_type_check.assumptions);
         }
+        expr_type_check.constraints.0.push((
+            expr_type_check.expr.type_variable.clone(),
+            Constraint::Equality {
+                ty: expected_type.instantiate(),
+                reason: ConstraintEqualityReason::ByDefinition {
+                    expr: expr_type_check.expr.range(),
+                    definition: definition_identifier_range,
+                },
+            },
+        ));
         solve_type_constraints(
             module_path,
             project_index,
@@ -588,15 +606,60 @@ fn solve_type_constraints(
 ) -> DiagnosticResult<Expression> {
     //println!("Deducing type of {:#?}", expr);
     //println!("Constraints: {:#?}", constraints);
-    // We implement the `SOLVE` algorithm from the above paper.
 
+    // We implement the `SOLVE` algorithm from the above paper.
     // The substitutions are defined to be idempotent, so a map instead of an ordered vec shall suffice.
-    let mut substitution = HashMap::<TypeVariableId, TypeVariable>::new();
-    let mut constraint_queue = constraints
-        .0
-        .into_iter()
-        .collect::<VecDeque<(TypeVariable, Constraint)>>();
+
+    let mut high_priority_constraints = VecDeque::new();
+    let mut mid_priority_constraints = VecDeque::new();
+    let mut low_priority_constraints = VecDeque::new();
+    for constraint in constraints.0 {
+        match &constraint.1 {
+            Constraint::Equality { reason, .. } => match reason {
+                ConstraintEqualityReason::LambdaType { .. } => {
+                    high_priority_constraints.push_back(constraint)
+                }
+                ConstraintEqualityReason::ByDefinition { .. } => {
+                    low_priority_constraints.push_back(constraint)
+                }
+                _ => mid_priority_constraints.push_back(constraint),
+            },
+            Constraint::ExplicitInstance { .. } => mid_priority_constraints.push_back(constraint),
+            Constraint::ImplicitInstance { .. } => mid_priority_constraints.push_back(constraint),
+        }
+    }
     // To solve the constraints, we will pop entries off the front of the queue, process them, and if needed push them to the back of the queue.
+    // There are a few phases to solving constraints - there are a number of constraints we want to process either first or last.
+    // We'll start by supplying the empty substitution.
+    solve_type_constraint_queue(
+        module_path,
+        high_priority_constraints,
+        HashMap::<TypeVariableId, TypeVariable>::new(),
+    )
+    .bind(|substitution| {
+        solve_type_constraint_queue(module_path, mid_priority_constraints, substitution)
+    })
+    .bind(|substitution| {
+        solve_type_constraint_queue(module_path, low_priority_constraints, substitution)
+    })
+    .map(|substitution| Expression {
+        ty: Type::Variable("test".to_string()),
+        contents: ExpressionContents::Symbol {
+            name: QualifiedName {
+                module_path: ModulePath(vec!["test".into()]),
+                name: "test".into(),
+                range: Location { line: 0, col: 0 }.into(),
+            },
+            range: Location { line: 0, col: 0 }.into(),
+        },
+    })
+}
+
+fn solve_type_constraint_queue(
+    module_path: &ModulePath,
+    mut constraint_queue: VecDeque<(TypeVariable, Constraint)>,
+    mut substitution: HashMap<TypeVariableId, TypeVariable>,
+) -> DiagnosticResult<HashMap<TypeVariableId, TypeVariable>> {
     while let Some((type_variable, constraint)) = constraint_queue.pop_front() {
         match constraint {
             Constraint::Equality { ty: other, reason } => {
@@ -614,11 +677,7 @@ fn solve_type_constraints(
                             Err(error) => {
                                 return DiagnosticResult::fail(process_unification_error(
                                     module_path,
-                                    type_variable_definition_ranges,
-                                    &type_variable,
-                                    &other,
                                     error,
-                                    quantifiers,
                                     reason,
                                     substitution,
                                 ));
@@ -628,11 +687,7 @@ fn solve_type_constraints(
                     Err(error) => {
                         return DiagnosticResult::fail(process_unification_error(
                             module_path,
-                            type_variable_definition_ranges,
-                            &type_variable,
-                            &other,
                             error,
-                            quantifiers,
                             reason,
                             substitution,
                         ));
@@ -684,33 +739,21 @@ fn solve_type_constraints(
         }
     }
 
-    DiagnosticResult::ok(Expression {
-        ty: Type::Variable("test".to_string()),
-        contents: ExpressionContents::Symbol {
-            name: QualifiedName {
-                module_path: ModulePath(vec!["test".into()]),
-                name: "test".into(),
-                range: Location { line: 0, col: 0 }.into(),
-            },
-            range: Location { line: 0, col: 0 }.into(),
-        },
-    })
+    DiagnosticResult::ok(substitution)
 }
 
 /// Process an error message generated by computing the most general unifier for two types.
 fn process_unification_error(
     module_path: &ModulePath,
-    type_variable_definition_ranges: &HashMap<TypeVariableId, Range>,
-    left: &TypeVariable,
-    right: &TypeVariable,
     error: UnificationError,
-    quantifiers: &[IdentifierP],
     reason: ConstraintEqualityReason,
     substitution: HashMap<TypeVariableId, TypeVariable>,
 ) -> ErrorMessage {
     let mut ty_printer = TypeVariablePrinter::new(substitution);
 
     // The constraint reasons we made earlier will help us emit an error.
+    // TODO make these error messages. It'll be better to make the messages
+    // once we know what kinds of scenarios trigger them after we experiment more.
     let (error_range, help) = match reason {
         ConstraintEqualityReason::Apply {
             function_range,
@@ -738,15 +781,25 @@ fn process_unification_error(
             ];
             (function_range, messages)
         }
-        _ => (Location { line: 0, col: 0 }.into(), Vec::new()),
+        ConstraintEqualityReason::ByDefinition { expr, definition } => {
+            let messages = vec![HelpMessage {
+                message: String::from(
+                    "error was raised because this expression's type was defined here",
+                ),
+                help_type: HelpType::Note,
+                diagnostic: Diagnostic::at(module_path.clone(), definition),
+            }];
+            (expr, messages)
+        }
+        _ => {
+            println!("Could not print error message reason {:#?}", reason);
+            (Location { line: 0, col: 0 }.into(), Vec::new())
+        }
     };
 
     // Now emit the error.
     match error {
-        UnificationError::TypeNameMismatch {
-            left_name,
-            right_name,
-        } => {
+        UnificationError::TypeNameMismatch { left, right } => {
             /*println!("TVDR: {:#?}", type_variable_definition_ranges);
             println!("Q: {:#?}", quantifiers);
             println!("L R {:#?} {:#?}", left, right);
@@ -771,7 +824,11 @@ fn process_unification_error(
                 Location { line: 0, col: 0 }.into()
             };*/
             ErrorMessage::new_with_many(
-                format!("type names {} and {} did not match", left_name, right_name),
+                format!(
+                    "types {} and {} did not match",
+                    ty_printer.print(left),
+                    ty_printer.print(right)
+                ),
                 Severity::Error,
                 Diagnostic::at(module_path.clone(), error_range),
                 help,
@@ -869,8 +926,8 @@ fn apply_substitution(sub: &HashMap<TypeVariableId, TypeVariable>, ty: &mut Type
 
 enum UnificationError {
     TypeNameMismatch {
-        left_name: QualifiedName,
-        right_name: QualifiedName,
+        left: TypeVariable,
+        right: TypeVariable,
     },
     /// One type was a named data type, the other type was a function.
     NamedNotFunction {
@@ -910,8 +967,14 @@ fn most_general_unifier(
                         Ok(mgu)
                     } else {
                         Err(UnificationError::TypeNameMismatch {
-                            left_name,
-                            right_name,
+                            left: TypeVariable::Named {
+                                name: left_name,
+                                parameters: left_parameters,
+                            },
+                            right: TypeVariable::Named {
+                                name: right_name,
+                                parameters: right_parameters,
+                            },
                         })
                     }
                 }
