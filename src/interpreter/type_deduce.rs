@@ -3,7 +3,7 @@ use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
 use super::{
-    index::ProjectIndex,
+    index::{ProjectIndex, SymbolI},
     index_resolve::resolve_symbol,
     parser::{ExpressionP, IdentifierP},
     type_check::{
@@ -186,7 +186,7 @@ fn generate_constraints(
                 // We don't need to add an assumption or constraint about this type variable, since it is known.
                 return DiagnosticResult::ok(ExprTypeCheck {
                     expr: ExpressionT {
-                        type_variable: TypeVariable::Known(arg.var_type.clone()),
+                        type_variable: arg.var_type.instantiate(),
                         contents: ExpressionContents::Argument(identifier),
                     },
                     type_variable_definition_ranges: HashMap::new(),
@@ -237,7 +237,7 @@ fn generate_constraints(
                     // We don't need an assumption, we know what the type of this symbol is.
                     DiagnosticResult::ok(ExprTypeCheck {
                         expr: ExpressionT {
-                            type_variable: TypeVariable::Known(symbol.symbol_type.clone()),
+                            type_variable: symbol.symbol_type.instantiate(),
                             contents: ExpressionContents::Symbol {
                                 name: QualifiedName {
                                     module_path: symbol_module_path.clone(),
@@ -434,6 +434,7 @@ fn generate_constraints(
                             expr: ExpressionT {
                                 type_variable: lambda_type,
                                 contents: ExpressionContents::Lambda {
+                                    lambda_token,
                                     params,
                                     expr: Box::new(expr.expr),
                                 },
@@ -540,6 +541,7 @@ fn generate_constraints(
                             expr: ExpressionT {
                                 type_variable: right_expr.expr.type_variable.clone(),
                                 contents: ExpressionContents::Let {
+                                    let_token,
                                     identifier,
                                     left_expr: Box::new(left_expr.expr),
                                     right_expr: Box::new(right_expr.expr),
@@ -605,7 +607,23 @@ fn solve_type_constraints(
                         // Add this substitution to the list of substitutions,
                         // and also apply the substitution to the current list of constraints.
                         apply_substitution_to_constraints(&mgu, &mut constraint_queue);
-                        substitution.extend(mgu);
+                        match unify(substitution.clone(), mgu) {
+                            Ok(sub) => {
+                                substitution = sub;
+                            }
+                            Err(error) => {
+                                return DiagnosticResult::fail(process_unification_error(
+                                    module_path,
+                                    type_variable_definition_ranges,
+                                    &type_variable,
+                                    &other,
+                                    error,
+                                    quantifiers,
+                                    reason,
+                                    substitution,
+                                ));
+                            }
+                        }
                     }
                     Err(error) => {
                         return DiagnosticResult::fail(process_unification_error(
@@ -665,7 +683,6 @@ fn solve_type_constraints(
             }
         }
     }
-    //println!("Substitution: {:#?}", substitution);
 
     DiagnosticResult::ok(Expression {
         ty: Type::Variable("test".to_string()),
@@ -691,6 +708,8 @@ fn process_unification_error(
     reason: ConstraintEqualityReason,
     substitution: HashMap<TypeVariableId, TypeVariable>,
 ) -> ErrorMessage {
+    let mut ty_printer = TypeVariablePrinter::new(substitution);
+
     // The constraint reasons we made earlier will help us emit an error.
     let (error_range, help) = match reason {
         ConstraintEqualityReason::Apply {
@@ -699,7 +718,6 @@ fn process_unification_error(
             argument_range,
             argument_ty,
         } => {
-            let mut ty_printer = TypeVariablePrinter::default();
             let messages = vec![
                 HelpMessage {
                     message: format!(
@@ -725,9 +743,9 @@ fn process_unification_error(
 
     // Now emit the error.
     match error {
-        UnificationError::TypeMismatch {
-            left: left_ty,
-            right: right_ty,
+        UnificationError::TypeNameMismatch {
+            left_name,
+            right_name,
         } => {
             /*println!("TVDR: {:#?}", type_variable_definition_ranges);
             println!("Q: {:#?}", quantifiers);
@@ -753,14 +771,18 @@ fn process_unification_error(
                 Location { line: 0, col: 0 }.into()
             };*/
             ErrorMessage::new_with_many(
-                format!("types {} and {} did not match", left_ty, right_ty),
+                format!("type names {} and {} did not match", left_name, right_name),
                 Severity::Error,
                 Diagnostic::at(module_path.clone(), error_range),
                 help,
             )
         }
-        UnificationError::WasNotFunction { ty } => ErrorMessage::new_with_many(
-            format!("type {} was not a function", ty),
+        UnificationError::NamedNotFunction { named_ty, func_ty } => ErrorMessage::new_with_many(
+            format!(
+                "a data type {} was found, but it was expected to be a function of type {}",
+                ty_printer.print(named_ty),
+                ty_printer.print(func_ty)
+            ),
             Severity::Error,
             Diagnostic::at(module_path.clone(), error_range),
             help,
@@ -770,7 +792,9 @@ fn process_unification_error(
 
 fn freevars(ty: &TypeVariable) -> HashSet<TypeVariableId> {
     match ty {
-        TypeVariable::Known(_) => HashSet::new(),
+        TypeVariable::Named { name, parameters } => {
+            parameters.iter().map(|ty| freevars(ty)).flatten().collect()
+        }
         TypeVariable::Function(l, r) => {
             let mut result = freevars(&l);
             result.extend(freevars(&r));
@@ -844,8 +868,15 @@ fn apply_substitution(sub: &HashMap<TypeVariableId, TypeVariable>, ty: &mut Type
 }
 
 enum UnificationError {
-    TypeMismatch { left: Type, right: Type },
-    WasNotFunction { ty: Type },
+    TypeNameMismatch {
+        left_name: QualifiedName,
+        right_name: QualifiedName,
+    },
+    /// One type was a named data type, the other type was a function.
+    NamedNotFunction {
+        named_ty: TypeVariable,
+        func_ty: TypeVariable,
+    },
 }
 
 /// Returns a substitution which unifies the two types. If one could not be found, this is a type error, and None will be returned.
@@ -855,35 +886,54 @@ fn most_general_unifier(
 ) -> Result<HashMap<TypeVariableId, TypeVariable>, UnificationError> {
     // If one of them is an unknown type variable, just set it to the other one.
     match left {
-        TypeVariable::Known(left) => {
+        TypeVariable::Named {
+            name: left_name,
+            parameters: left_parameters,
+        } => {
             match right {
-                TypeVariable::Known(right) => {
-                    // Both type variables are known.
+                TypeVariable::Named {
+                    name: right_name,
+                    parameters: right_parameters,
+                } => {
+                    // Both type variables are named types.
                     // Check that they are the same.
-                    if left == right {
-                        Ok(HashMap::new())
+                    if left_name == right_name {
+                        // Unify the type parameters.
+                        // The lists must have equal length, since the names matched.
+                        let mut mgu = HashMap::new();
+                        for (left_param, right_param) in
+                            left_parameters.into_iter().zip(right_parameters)
+                        {
+                            let inner_mgu = most_general_unifier(left_param, right_param)?;
+                            mgu = unify(mgu, inner_mgu)?;
+                        }
+                        Ok(mgu)
                     } else {
-                        Err(UnificationError::TypeMismatch { left, right })
+                        Err(UnificationError::TypeNameMismatch {
+                            left_name,
+                            right_name,
+                        })
                     }
                 }
                 TypeVariable::Unknown(right) => {
                     let mut map = HashMap::new();
-                    map.insert(right, TypeVariable::Known(left));
+                    map.insert(
+                        right,
+                        TypeVariable::Named {
+                            name: left_name,
+                            parameters: left_parameters,
+                        },
+                    );
                     Ok(map)
                 }
                 TypeVariable::Function(right_param, right_result) => {
-                    // Check that the `left` type is a function.
-                    // Then we can unify its parameter and its result.
-                    if let Type::Function(left_param, left_result) = left {
-                        let mut mgu1 =
-                            most_general_unifier(*right_param, TypeVariable::Known(*left_param))?;
-                        let mgu2 =
-                            most_general_unifier(*right_result, TypeVariable::Known(*left_result))?;
-                        mgu1.extend(mgu2);
-                        Ok(mgu1)
-                    } else {
-                        Err(UnificationError::WasNotFunction { ty: left })
-                    }
+                    Err(UnificationError::NamedNotFunction {
+                        named_ty: TypeVariable::Named {
+                            name: left_name,
+                            parameters: left_parameters,
+                        },
+                        func_ty: TypeVariable::Function(right_param, right_result),
+                    })
                 }
             }
         }
@@ -894,26 +944,17 @@ fn most_general_unifier(
         }
         TypeVariable::Function(left_param, left_result) => {
             match right {
-                TypeVariable::Known(right) => {
-                    // Check that the `right` type is a function.
-                    // Then we can unify its parameter and its result.
-                    if let Type::Function(right_param, right_result) = right {
-                        let mut mgu1 =
-                            most_general_unifier(*left_param, TypeVariable::Known(*right_param))?;
-                        let mgu2 =
-                            most_general_unifier(*left_result, TypeVariable::Known(*right_result))?;
-                        mgu1.extend(mgu2);
-                        Ok(mgu1)
-                    } else {
-                        Err(UnificationError::WasNotFunction { ty: right })
-                    }
+                TypeVariable::Named { name, parameters } => {
+                    Err(UnificationError::NamedNotFunction {
+                        func_ty: TypeVariable::Function(left_param, left_result),
+                        named_ty: TypeVariable::Named { name, parameters },
+                    })
                 }
                 TypeVariable::Function(right_param, right_result) => {
                     // Both were functions. Unify both the parameters and the results.
-                    let mut mgu1 = most_general_unifier(*left_param, *right_param)?;
+                    let mgu1 = most_general_unifier(*left_param, *right_param)?;
                     let mgu2 = most_general_unifier(*left_result, *right_result)?;
-                    mgu1.extend(mgu2);
-                    Ok(mgu1)
+                    unify(mgu1, mgu2)
                 }
                 TypeVariable::Unknown(right) => {
                     let mut map = HashMap::new();
@@ -923,4 +964,22 @@ fn most_general_unifier(
             }
         }
     }
+}
+
+fn unify(
+    mut a: HashMap<TypeVariableId, TypeVariable>,
+    b: HashMap<TypeVariableId, TypeVariable>,
+) -> Result<HashMap<TypeVariableId, TypeVariable>, UnificationError> {
+    for (id, v) in b {
+        match a.entry(id) {
+            Entry::Occupied(occupied) => {
+                let inner_mgu = most_general_unifier(occupied.get().clone(), v)?;
+                a = unify(a, inner_mgu)?;
+            }
+            Entry::Vacant(vacant) => {
+                vacant.insert(v);
+            }
+        }
+    }
+    Ok(a)
 }

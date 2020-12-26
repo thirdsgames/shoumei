@@ -1,7 +1,7 @@
 //! Resolves an unqualified name into a fully qualified name with type information.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::Display,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -10,6 +10,7 @@ use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
 use super::{
     parser::{IdentifierP, TypeP},
+    type_check::TypeVariable,
     types::ProjectTypesC,
     ModulePath, QualifiedName,
 };
@@ -27,6 +28,75 @@ pub enum Type {
     Function(Box<Type>, Box<Type>),
     /// A type variable, like `a`. Type variables may not contain parameters.
     Variable(String),
+}
+
+impl Type {
+    /// Replaces named type parameters e.g. `a` with their concrete types.
+    /// For example, calling this function on `Just a`, when `named_type_parameters = [a]` and `concrete_type_parameters = [Bool]` gives `Just Bool`.
+    pub fn replace_type_variables(
+        self,
+        named_type_parameters: &[IdentifierP],
+        concrete_type_parameters: &[Type],
+    ) -> Type {
+        match self {
+            Type::Named { name, parameters } => Type::Named {
+                name,
+                parameters: parameters
+                    .into_iter()
+                    .map(|param| {
+                        param
+                            .replace_type_variables(named_type_parameters, concrete_type_parameters)
+                    })
+                    .collect(),
+            },
+            Type::Function(l, r) => Type::Function(
+                Box::new(l.replace_type_variables(named_type_parameters, concrete_type_parameters)),
+                Box::new(r.replace_type_variables(named_type_parameters, concrete_type_parameters)),
+            ),
+            Type::Variable(name) => {
+                // Is this type variable in our list of named type variables?
+                if let Some((i, _)) = named_type_parameters
+                    .iter()
+                    .enumerate()
+                    .find(|(_, param)| param.name == name)
+                {
+                    concrete_type_parameters[i].clone()
+                } else {
+                    // This was not in the list; just return it verbatim.
+                    Type::Variable(name)
+                }
+            }
+        }
+    }
+
+    /// You can instantiate a type into a type variable,
+    /// by letting all unknown variables be polymorphic type variables, over which the type is quantified.
+    pub fn instantiate(&self) -> TypeVariable {
+        self.instantiate_with(&mut HashMap::new())
+    }
+
+    /// While we're instantiating a type, we need to keep track of all of the named type variables
+    /// and which IDs we've assigned them.
+    fn instantiate_with(&self, ids: &mut HashMap<String, TypeVariableId>) -> TypeVariable {
+        match self {
+            Type::Named { name, parameters } => TypeVariable::Named {
+                name: name.clone(),
+                parameters: parameters
+                    .into_iter()
+                    .map(|p| p.instantiate_with(ids))
+                    .collect::<Vec<_>>(),
+            },
+            Type::Function(l, r) => {
+                let l2 = l.instantiate_with(ids);
+                let r2 = r.instantiate_with(ids);
+                TypeVariable::Function(Box::new(l2), Box::new(r2))
+            }
+            Type::Variable(name) => TypeVariable::Unknown(
+                *ids.entry(name.clone())
+                    .or_insert_with(|| TypeVariableId::default()),
+            ),
+        }
+    }
 }
 
 /// An unknown type, used for intermediate values of expressions that we don't know the type of.

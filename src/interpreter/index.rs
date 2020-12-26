@@ -85,6 +85,7 @@ pub struct TypeConstructorI {
 #[derive(Debug)]
 pub struct SymbolI {
     pub name: DefinedName,
+    pub quantifiers: Vec<IdentifierP>,
     pub symbol_type: Type,
 }
 
@@ -141,6 +142,7 @@ pub fn index(
                 if let Some(symbol_type) = symbol_type {
                     let definition = SymbolI {
                         name: definition.identifier.clone().into(),
+                        quantifiers: definition.quantifiers.clone(),
                         symbol_type,
                     };
                     vacant.insert(definition);
@@ -229,6 +231,7 @@ pub fn index(
 
                             let symbol = SymbolI {
                                 name: type_ctor.id.clone().into(),
+                                quantifiers: data.type_params.clone(),
                                 symbol_type: type_ctor_type,
                             };
                             vacant.insert(symbol);

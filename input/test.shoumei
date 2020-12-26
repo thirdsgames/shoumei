@@ -47,3 +47,6 @@ def and3 : Bool -> Bool -> Bool
 
 def wrong_type : Bool
     wrong_type = and Unit Unit
+
+def wrong_type2 : Bool
+    wrong_type2 = and (lambda x -> and x x)

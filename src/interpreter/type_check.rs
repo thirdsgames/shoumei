@@ -454,11 +454,15 @@ impl Ranged for ExpressionT {
     }
 }
 
+/// Closely tied to the `Type` struct, this is used while type checking to allow
+/// unknown types, represented by `TypeVariableId`s.
 #[derive(Debug, Clone)]
 pub enum TypeVariable {
-    Known(Type),
-    /// Sometimes, we need to work with mixes of known and unknown types.
-    /// This `function` type variable allows us to do that, acting like `Type::Function` but allowing unknowns.
+    /// An explicitly named type possibly with type parameters, e.g. `Bool` or `Either a b`.
+    Named {
+        name: QualifiedName,
+        parameters: Vec<TypeVariable>,
+    },
     Function(Box<TypeVariable>, Box<TypeVariable>),
     Unknown(TypeVariableId),
 }
@@ -471,21 +475,31 @@ pub struct TypeVariablePrinter {
     /// When we see a new type variable that we've not named yet, what name should we give it?
     /// This monotonically increasing counter is used to work out what the name should be.
     type_variable_name: u32,
-}
-
-impl Default for TypeVariablePrinter {
-    fn default() -> Self {
-        Self {
-            type_variable_names: HashMap::new(),
-            type_variable_name: 0,
-        }
-    }
+    /// A substitution mapping type variables to the substituted type variable.
+    /// This map is tried before making a new name for a type variable.
+    substitution: HashMap<TypeVariableId, TypeVariable>,
 }
 
 impl TypeVariablePrinter {
+    pub fn new(substitution: HashMap<TypeVariableId, TypeVariable>) -> Self {
+        Self {
+            type_variable_names: HashMap::new(),
+            type_variable_name: 0,
+            substitution,
+        }
+    }
+
     pub fn print(&mut self, ty: TypeVariable) -> String {
         match ty {
-            TypeVariable::Known(ty) => ty.to_string(),
+            TypeVariable::Named { name, parameters } => {
+                let mut result = name.name;
+                for param in parameters {
+                    result += " (";
+                    result += &self.print(param);
+                    result += ")";
+                }
+                result
+            }
             TypeVariable::Function(l, r) => {
                 // TODO sort out precedence
                 format!("{} -> ({})", self.print(*l), self.print(*r))
@@ -495,6 +509,10 @@ impl TypeVariablePrinter {
     }
 
     fn get_name(&mut self, ty: &TypeVariableId) -> String {
+        if let Some(result) = self.substitution.get(ty) {
+            let cloned = result.clone();
+            return self.print(cloned);
+        }
         if let Some(result) = self.type_variable_names.get(&ty) {
             return result.clone();
         }
@@ -553,11 +571,13 @@ pub enum ExpressionContents<E> {
     Apply(Box<E>, Box<E>),
     /// A lambda abstraction, specifically `lambda params -> expr`.
     Lambda {
+        lambda_token: Range,
         params: Vec<IdentifierP>,
         expr: Box<E>,
     },
     /// A let expression, specifically `let identifier = left_expr in right_expr`.
     Let {
+        let_token: Range,
         identifier: IdentifierP,
         left_expr: Box<E>,
         right_expr: Box<E>,
@@ -575,17 +595,14 @@ where
             ExpressionContents::PolytypeVariable(var) => var.range,
             ExpressionContents::Symbol { range, .. } => *range,
             ExpressionContents::Apply(l, r) => l.range().union(r.range()),
-            ExpressionContents::Lambda { params, expr } => params
-                .iter()
-                .fold(expr.range(), |acc, i| acc.union(i.range)),
+            ExpressionContents::Lambda {
+                lambda_token, expr, ..
+            } => lambda_token.union(expr.range()),
             ExpressionContents::Let {
-                identifier,
-                left_expr,
+                let_token,
                 right_expr,
-            } => identifier
-                .range
-                .union(left_expr.range())
-                .union(right_expr.range()),
+                ..
+            } => let_token.union(right_expr.range()),
         }
     }
 }
@@ -774,10 +791,9 @@ impl<'a> TypeChecker<'a> {
                                 // against the type parameters above.
                                 // This means that when matching a `Maybe Bool`, the type constructor `Just a` becomes `Just Bool`,
                                 // because the `a` is replaced with the concrete type `Bool`.
-                                let expected = Self::replace_type_variables(
+                                let expected = expected.replace_type_variables(
                                     named_type_parameters,
                                     &concrete_type_parameters,
-                                    expected,
                                 );
                                 self.match_and_bind(arg, expected)
                             })
@@ -808,55 +824,6 @@ impl<'a> TypeChecker<'a> {
             },
             Pattern::Unknown(_) => DiagnosticResult::ok(HashMap::new()),
             Pattern::Function { .. } => unimplemented!(),
-        }
-    }
-
-    /// Replaces named type parameters e.g. `a` with their concrete types.
-    /// For example, calling this function on `Just a`, when `named_type_parameters = [a]` and `concrete_type_parameters = [Bool]` gives `Just Bool`.
-    fn replace_type_variables(
-        named_type_parameters: &[IdentifierP],
-        concrete_type_parameters: &[Type],
-        ty: Type,
-    ) -> Type {
-        match ty {
-            Type::Named { name, parameters } => Type::Named {
-                name,
-                parameters: parameters
-                    .into_iter()
-                    .map(|param| {
-                        Self::replace_type_variables(
-                            named_type_parameters,
-                            concrete_type_parameters,
-                            param,
-                        )
-                    })
-                    .collect(),
-            },
-            Type::Function(l, r) => Type::Function(
-                Box::new(Self::replace_type_variables(
-                    named_type_parameters,
-                    concrete_type_parameters,
-                    *l,
-                )),
-                Box::new(Self::replace_type_variables(
-                    named_type_parameters,
-                    concrete_type_parameters,
-                    *r,
-                )),
-            ),
-            Type::Variable(name) => {
-                // Is this type variable in our list of named type variables?
-                if let Some((i, _)) = named_type_parameters
-                    .iter()
-                    .enumerate()
-                    .find(|(_, param)| param.name == name)
-                {
-                    concrete_type_parameters[i].clone()
-                } else {
-                    // This was not in the list; just return it verbatim.
-                    Type::Variable(name)
-                }
-            }
         }
     }
 
