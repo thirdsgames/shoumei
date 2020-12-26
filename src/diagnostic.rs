@@ -93,6 +93,20 @@ impl ErrorMessage {
             help: vec![help],
         }
     }
+
+    pub fn new_with_many(
+        message: String,
+        severity: Severity,
+        diagnostic: Diagnostic,
+        help: Vec<HelpMessage>,
+    ) -> Self {
+        Self {
+            message,
+            severity,
+            diagnostic,
+            help,
+        }
+    }
 }
 
 /// Even if warnings or errors are emitted, we may still be able to continue parsing the code.

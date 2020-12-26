@@ -90,6 +90,10 @@ impl Range {
     }
 }
 
+pub trait Ranged {
+    fn range(&self) -> Range;
+}
+
 /// A list of path segments. These cannot contain forward or backward slashes, or colons.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ModulePath(pub Vec<String>);

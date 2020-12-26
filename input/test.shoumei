@@ -44,3 +44,6 @@ def lambda_test : Bool -> Bool
 
 def and3 : Bool -> Bool -> Bool
     and3 a b = let x = and a b in and x x
+
+def wrong_type : Bool
+    wrong_type = and Unit Unit

@@ -13,7 +13,7 @@ use super::{
     parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP},
     type_deduce::deduce_expr_type,
     type_resolve::{Type, TypeVariableId},
-    Location, ModulePath, QualifiedName, Range,
+    Location, ModulePath, QualifiedName, Range, Ranged,
 };
 
 /// A parsed and fully type checked module.
@@ -448,6 +448,12 @@ pub struct ExpressionT {
     pub contents: ExpressionContents<Self>,
 }
 
+impl Ranged for ExpressionT {
+    fn range(&self) -> Range {
+        self.contents.range()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeVariable {
     Known(Type),
@@ -457,10 +463,73 @@ pub enum TypeVariable {
     Unknown(TypeVariableId),
 }
 
+/// A utility for printing type variables to screen.
+/// Works like the Display trait, but works better for printing type variable names.
+pub struct TypeVariablePrinter {
+    /// Maps type variable IDs to the names we use to render them.
+    type_variable_names: HashMap<TypeVariableId, String>,
+    /// When we see a new type variable that we've not named yet, what name should we give it?
+    /// This monotonically increasing counter is used to work out what the name should be.
+    type_variable_name: u32,
+}
+
+impl Default for TypeVariablePrinter {
+    fn default() -> Self {
+        Self {
+            type_variable_names: HashMap::new(),
+            type_variable_name: 0,
+        }
+    }
+}
+
+impl TypeVariablePrinter {
+    pub fn print(&mut self, ty: TypeVariable) -> String {
+        match ty {
+            TypeVariable::Known(ty) => ty.to_string(),
+            TypeVariable::Function(l, r) => {
+                // TODO sort out precedence
+                format!("{} -> ({})", self.print(*l), self.print(*r))
+            }
+            TypeVariable::Unknown(ty) => self.get_name(&ty),
+        }
+    }
+
+    fn get_name(&mut self, ty: &TypeVariableId) -> String {
+        if let Some(result) = self.type_variable_names.get(&ty) {
+            return result.clone();
+        }
+        let name = self.new_name();
+        self.type_variable_names.insert(*ty, name.clone());
+        name
+    }
+
+    fn new_name(&mut self) -> String {
+        let id = self.type_variable_name;
+        self.type_variable_name += 1;
+
+        // Assign a new lowercase Greek letter to this type.
+        // There are 24 letters to choose from.
+        // If we overflow this, just add a suffix to the name.
+        let name = std::char::from_u32('α' as u32 + (id % 24)).unwrap();
+        let suffix = id / 24;
+        if suffix > 0 {
+            format!("<{}{}>", name, suffix)
+        } else {
+            format!("<{}>", name)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Expression {
     pub ty: Type,
     pub contents: ExpressionContents<Self>,
+}
+
+impl Ranged for Expression {
+    fn range(&self) -> Range {
+        self.contents.range()
+    }
 }
 
 /// Represents the contents of an expression (which may or may not have been already type checked).
@@ -473,7 +542,12 @@ pub enum ExpressionContents<E> {
     /// A local variable declared by a `let` expression.
     PolytypeVariable(IdentifierP),
     /// A symbol in global scope e.g. `+` or `fold`.
-    Symbol(QualifiedName),
+    Symbol {
+        /// The name that the symbol refers to.
+        name: QualifiedName,
+        /// The range where the symbol's name was written in this file.
+        range: Range,
+    },
     /// Apply the left hand side to the right hand side, e.g. `a b`.
     /// More complicated expressions e.g. `a b c d` can be desugared into `((a b) c) d`.
     Apply(Box<E>, Box<E>),
@@ -490,6 +564,32 @@ pub enum ExpressionContents<E> {
     },
 }
 
+impl<E> Ranged for ExpressionContents<E>
+where
+    E: Ranged,
+{
+    fn range(&self) -> Range {
+        match self {
+            ExpressionContents::Argument(arg) => arg.range,
+            ExpressionContents::MonotypeVariable(var) => var.range,
+            ExpressionContents::PolytypeVariable(var) => var.range,
+            ExpressionContents::Symbol { range, .. } => *range,
+            ExpressionContents::Apply(l, r) => l.range().union(r.range()),
+            ExpressionContents::Lambda { params, expr } => params
+                .iter()
+                .fold(expr.range(), |acc, i| acc.union(i.range)),
+            ExpressionContents::Let {
+                identifier,
+                left_expr,
+                right_expr,
+            } => identifier
+                .range
+                .union(left_expr.range())
+                .union(right_expr.range()),
+        }
+    }
+}
+
 impl<'a> TypeChecker<'a> {
     fn compute(mut self, module: ModuleP) -> DiagnosticResult<Module> {
         let mut definitions = HashMap::<String, Definition>::new();
@@ -497,6 +597,7 @@ impl<'a> TypeChecker<'a> {
         for definition in module.definitions {
             let cases = definition.cases;
             let def_ident = definition.identifier;
+            let quantifiers = definition.quantifiers;
 
             // Let's type check the function signature.
             let symbol = &self.project_index[self.module_path].symbols[&def_ident.name];
@@ -514,7 +615,7 @@ impl<'a> TypeChecker<'a> {
                 cases
                     .into_iter()
                     .map(|(range, args, replacement)| {
-                        self.validate_case(&symbol_type, range, args, replacement)
+                        self.validate_case(&symbol_type, range, args, replacement, &quantifiers)
                     })
                     .collect::<DiagnosticResult<_>>()
             });
@@ -537,11 +638,7 @@ impl<'a> TypeChecker<'a> {
                 definitions.insert(
                     def_ident.name,
                     Definition {
-                        quantifiers: definition
-                            .quantifiers
-                            .iter()
-                            .map(|id| id.name.clone())
-                            .collect(),
+                        quantifiers: quantifiers.iter().map(|id| id.name.clone()).collect(),
                         symbol_type: symbol_type.clone(),
                         cases: cases
                             .into_iter()
@@ -577,6 +674,7 @@ impl<'a> TypeChecker<'a> {
         range: Range,
         args: Vec<Pattern>,
         replacement: ExpressionP,
+        quantifiers: &[IdentifierP],
     ) -> DiagnosticResult<(Range, Vec<Pattern>, Expression)> {
         let (symbol_args, _) = get_args_of_type(symbol_type);
         // The types in `args` must match the first `args.len()` types in symbol_args.
@@ -606,10 +704,9 @@ impl<'a> TypeChecker<'a> {
                     self.module_path,
                     self.project_index,
                     &arg_vars,
-                    HashMap::new(),
-                    HashMap::new(),
                     replacement,
                     result,
+                    quantifiers,
                 )
             })
             .map(|expr| (range, args, expr))
