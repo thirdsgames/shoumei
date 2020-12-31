@@ -3,7 +3,7 @@ use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
 use super::{
-    index::{ProjectIndex, SymbolI},
+    index::ProjectIndex,
     index_resolve::resolve_symbol,
     parser::{ExpressionP, IdentifierP},
     type_check::{
@@ -642,17 +642,7 @@ fn solve_type_constraints(
     .bind(|substitution| {
         solve_type_constraint_queue(module_path, low_priority_constraints, substitution)
     })
-    .map(|substitution| Expression {
-        ty: Type::Variable("test".to_string()),
-        contents: ExpressionContents::Symbol {
-            name: QualifiedName {
-                module_path: ModulePath(vec!["test".into()]),
-                name: "test".into(),
-                range: Location { line: 0, col: 0 }.into(),
-            },
-            range: Location { line: 0, col: 0 }.into(),
-        },
-    })
+    .bind(|substitution| substitute(&substitution, expr, module_path))
 }
 
 fn solve_type_constraint_queue(
@@ -849,7 +839,7 @@ fn process_unification_error(
 
 fn freevars(ty: &TypeVariable) -> HashSet<TypeVariableId> {
     match ty {
-        TypeVariable::Named { name, parameters } => {
+        TypeVariable::Named { parameters, .. } => {
             parameters.iter().map(|ty| freevars(ty)).flatten().collect()
         }
         TypeVariable::Function(l, r) => {
@@ -870,14 +860,12 @@ fn activevars(constraint_queue: &VecDeque<(TypeVariable, Constraint)>) -> HashSe
     for (ty, constraint) in constraint_queue {
         result.extend(freevars(ty));
         match constraint {
-            Constraint::Equality { ty: other, reason } => {
+            Constraint::Equality { ty: other, .. } => {
                 result.extend(freevars(other));
             }
             Constraint::ExplicitInstance { .. } => unimplemented!(),
             Constraint::ImplicitInstance {
-                scheme,
-                monotypes,
-                reason,
+                scheme, monotypes, ..
             } => {
                 result.extend(freevars(scheme).intersection(monotypes));
             }
@@ -893,12 +881,10 @@ fn apply_substitution_to_constraints(
     for (ty, constraint) in constraint_queue {
         apply_substitution(mgu, ty);
         match constraint {
-            Constraint::Equality { ty: other, reason } => apply_substitution(mgu, other),
-            Constraint::ExplicitInstance { scheme, reason } => apply_substitution(mgu, scheme),
+            Constraint::Equality { ty: other, .. } => apply_substitution(mgu, other),
+            Constraint::ExplicitInstance { scheme, .. } => apply_substitution(mgu, scheme),
             Constraint::ImplicitInstance {
-                scheme,
-                monotypes,
-                reason,
+                scheme, monotypes, ..
             } => {
                 apply_substitution(mgu, scheme);
                 let original_monotypes = std::mem::take(monotypes);
@@ -1045,4 +1031,134 @@ fn unify(
         }
     }
     Ok(a)
+}
+
+fn substitute(
+    substitution: &HashMap<TypeVariableId, TypeVariable>,
+    expr: ExpressionT,
+    module_path: &ModulePath,
+) -> DiagnosticResult<Expression> {
+    let range = expr.range();
+    let ExpressionT {
+        type_variable,
+        contents,
+    } = expr;
+    substitute_contents(substitution, contents, module_path).bind(|contents| {
+        let (ty, mut messages) =
+            substitute_type(substitution, type_variable.clone(), module_path, range).destructure();
+
+        // We only want to generate one error message, all the others will just say "could not deduce type of expression".
+        messages.truncate(1);
+        if let Some(message) = messages.get_mut(0) {
+            if message.help.is_empty() {
+                let mut tvp = TypeVariablePrinter::new(substitution.clone());
+                message.help.push(HelpMessage {
+                    message: format!(
+                        "best guess of expression type was {}",
+                        tvp.print(type_variable)
+                    ),
+                    help_type: HelpType::Note,
+                    diagnostic: Diagnostic::at(module_path.clone(), range),
+                })
+            }
+        }
+
+        match ty {
+            Some(ty) => DiagnosticResult::ok_with_many(Expression { ty, contents }, messages),
+            None => DiagnosticResult::fail_many(messages),
+        }
+    })
+}
+
+fn substitute_contents(
+    substitution: &HashMap<TypeVariableId, TypeVariable>,
+    contents: ExpressionContents<ExpressionT>,
+    module_path: &ModulePath,
+) -> DiagnosticResult<ExpressionContents<Expression>> {
+    match contents {
+        ExpressionContents::Argument(a) => DiagnosticResult::ok(ExpressionContents::Argument(a)),
+        ExpressionContents::MonotypeVariable(a) => {
+            DiagnosticResult::ok(ExpressionContents::MonotypeVariable(a))
+        }
+        ExpressionContents::PolytypeVariable(a) => {
+            DiagnosticResult::ok(ExpressionContents::PolytypeVariable(a))
+        }
+        ExpressionContents::Symbol { name, range } => {
+            DiagnosticResult::ok(ExpressionContents::Symbol { name, range })
+        }
+        ExpressionContents::Apply(l, r) => substitute(substitution, *l, module_path).bind(|l| {
+            substitute(substitution, *r, module_path)
+                .map(|r| ExpressionContents::Apply(Box::new(l), Box::new(r)))
+        }),
+        ExpressionContents::Lambda {
+            lambda_token,
+            params,
+            expr,
+        } => substitute(substitution, *expr, module_path).map(|expr| ExpressionContents::Lambda {
+            lambda_token,
+            params,
+            expr: Box::new(expr),
+        }),
+        ExpressionContents::Let {
+            let_token,
+            identifier,
+            left_expr,
+            right_expr,
+        } => substitute(substitution, *left_expr, module_path).bind(|left_expr| {
+            substitute(substitution, *right_expr, module_path).map(|right_expr| {
+                ExpressionContents::Let {
+                    let_token,
+                    identifier,
+                    left_expr: Box::new(left_expr),
+                    right_expr: Box::new(right_expr),
+                }
+            })
+        }),
+    }
+}
+
+fn substitute_type(
+    substitution: &HashMap<TypeVariableId, TypeVariable>,
+    ty: TypeVariable,
+    module_path: &ModulePath,
+    range: Range,
+) -> DiagnosticResult<Type> {
+    match ty {
+        TypeVariable::Named { name, parameters } => {
+            let parameters = parameters
+                .into_iter()
+                .map(|param| substitute_type(substitution, param, module_path, range))
+                .collect::<DiagnosticResult<Vec<_>>>();
+            parameters.map(|parameters| Type::Named { name, parameters })
+        }
+        TypeVariable::Function(l, r) => {
+            substitute_type(substitution, *l, module_path, range).bind(|l| {
+                substitute_type(substitution, *r, module_path, range)
+                    .map(|r| Type::Function(Box::new(l), Box::new(r)))
+            })
+        }
+        TypeVariable::Unknown(id) => match substitution.get(&id) {
+            Some(value) => {
+                // Sometimes, we can have a substitution that substitutes some type variable for itself.
+                // The substitution is idempotent, so there are no cycles.
+                // So we'll check if `value == TypeVariable::Unknown(id)`.
+                if let TypeVariable::Unknown(other_id) = value {
+                    if *other_id == id {
+                        return DiagnosticResult::fail(ErrorMessage::new(
+                            String::from("could not deduce type of this expression"),
+                            Severity::Error,
+                            Diagnostic::at(module_path.clone(), range),
+                        ));
+                    }
+                }
+
+                substitute_type(substitution, value.clone(), module_path, range)
+            }
+            None => DiagnosticResult::fail(ErrorMessage::new(
+                String::from("could not deduce type of this expression"),
+                Severity::Error,
+                Diagnostic::at(module_path.clone(), range),
+            )),
+        },
+    }
 }

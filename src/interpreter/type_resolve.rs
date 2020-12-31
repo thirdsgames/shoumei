@@ -82,7 +82,7 @@ impl Type {
             Type::Named { name, parameters } => TypeVariable::Named {
                 name: name.clone(),
                 parameters: parameters
-                    .into_iter()
+                    .iter()
                     .map(|p| p.instantiate_with(ids))
                     .collect::<Vec<_>>(),
             },
@@ -93,7 +93,7 @@ impl Type {
             }
             Type::Variable(name) => TypeVariable::Unknown(
                 *ids.entry(name.clone())
-                    .or_insert_with(|| TypeVariableId::default()),
+                    .or_insert_with(TypeVariableId::default),
             ),
         }
     }

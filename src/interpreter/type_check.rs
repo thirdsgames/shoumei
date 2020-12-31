@@ -511,7 +511,17 @@ impl TypeVariablePrinter {
     fn get_name(&mut self, ty: &TypeVariableId) -> String {
         if let Some(result) = self.substitution.get(ty) {
             let cloned = result.clone();
-            return self.print(cloned);
+            // If the substitution doesn't do anything, don't stick in an infinite loop.
+            // We don't need to worry about cycles - the substitution is defined to be idempotent.
+            if let TypeVariable::Unknown(other_id) = cloned {
+                if other_id == *ty {
+                    // The substitution exists, but maps the value to itself.
+                } else {
+                    return self.print(cloned);
+                }
+            } else {
+                return self.print(cloned);
+            }
         }
         if let Some(result) = self.type_variable_names.get(&ty) {
             return result.clone();
