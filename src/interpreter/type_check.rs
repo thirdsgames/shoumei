@@ -648,14 +648,7 @@ impl<'a> TypeChecker<'a> {
                 cases
                     .into_iter()
                     .map(|(range, args, replacement)| {
-                        self.validate_case(
-                            &symbol_type,
-                            range,
-                            args,
-                            replacement,
-                            &quantifiers,
-                            def_ident.range,
-                        )
+                        self.validate_case(&symbol_type, range, args, replacement, def_ident.range)
                     })
                     .collect::<DiagnosticResult<_>>()
             });
@@ -714,7 +707,6 @@ impl<'a> TypeChecker<'a> {
         range: Range,
         args: Vec<Pattern>,
         replacement: ExpressionP,
-        quantifiers: &[IdentifierP],
         definition_identifier_range: Range,
     ) -> DiagnosticResult<(Range, Vec<Pattern>, Expression)> {
         let (symbol_args, _) = get_args_of_type(symbol_type);
@@ -747,7 +739,6 @@ impl<'a> TypeChecker<'a> {
                     &arg_vars,
                     replacement,
                     result,
-                    quantifiers,
                     definition_identifier_range,
                 )
             })

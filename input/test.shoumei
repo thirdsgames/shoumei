@@ -18,11 +18,7 @@ data Maybe a = Just a | Nothing
 
 data Chain a = Chain (Maybe (Maybe a)) | Empty
 
-def and2 : Maybe Unit -> Bool -> Maybe Unit
-    and2 (Just Unit) True = Just Unit
-    and2 _ _ = Nothing
-
-def unchain : Chain (Maybe (Maybe Bool)) -> Maybe Bool
+def unchain : Chain Bool -> Maybe Bool
     unchain (Chain (Just (Just a))) = Just a
     unchain _ = Nothing
 
@@ -47,9 +43,3 @@ def lambda_test : Bool -> Bool
 
 def and3 : Bool -> Bool -> Bool
     and3 a b = let x = and a b in and x x
-
-def wrong_type : Bool
-    wrong_type = and Unit Unit
-
-def wrong_type2 : Bool
-    wrong_type2 = and (lambda x -> and x x)

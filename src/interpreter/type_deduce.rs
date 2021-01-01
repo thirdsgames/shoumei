@@ -78,12 +78,6 @@ enum Constraint {
         ty: TypeVariable,
         reason: ConstraintEqualityReason,
     },
-    /// `ty` must be a generic instance of the polytype `scheme`.
-    /// For example, `Maybe Bool` is a generic instance of `Maybe a`.
-    ExplicitInstance {
-        scheme: TypeVariable,
-        reason: ConstraintExplicitReason,
-    },
     /// `ty` must be a generic instance of the polytype `scheme`, when
     /// generalising `scheme` with respect to the given monotypes, i.e. generalising
     /// over all the polymorphic type variables.
@@ -117,8 +111,6 @@ enum ConstraintEqualityReason {
     LetType { let_token: Range, right_expr: Range },
     /// This constraint is a generalised version of an implicit instance constraint.
     Implicit(ConstraintImplicitReason),
-    /// This constraint is a generalised version of an explicit instance constraint.
-    Explicit(ConstraintExplicitReason),
     /// The expression was defined to be a specific type.
     ByDefinition {
         /// The expression we're type checking.
@@ -143,7 +135,6 @@ pub fn deduce_expr_type(
     args: &HashMap<String, BoundVariable>,
     expr: ExpressionP,
     expected_type: Type,
-    quantifiers: &[IdentifierP],
     definition_identifier_range: Range,
 ) -> DiagnosticResult<Expression> {
     generate_constraints(
@@ -171,12 +162,8 @@ pub fn deduce_expr_type(
         ));
         solve_type_constraints(
             module_path,
-            project_index,
-            args,
-            &expr_type_check.type_variable_definition_ranges,
             expr_type_check.expr,
             expr_type_check.constraints,
-            quantifiers,
         )
     })
 }
@@ -393,8 +380,6 @@ fn generate_constraints(
                         *expr,
                     )
                     .map(|mut expr| {
-                        //let type_variable = TypeVariable::Unknown(TypeVariableId::default());
-
                         // First, add the constraint that this lambda abstraction's type is input_types -> expr.type.
                         // Gradually process the params to this function, curring each at a time, to get a resultant type variable.
                         let mut lambda_type = expr.expr.type_variable.clone();
@@ -414,26 +399,18 @@ fn generate_constraints(
                             ));
                             lambda_type = lambda_step_type;
                         }
-                        /*expr.constraints
-                        .0
-                        .push((type_variable.clone(), Constraint::Equality {
-                            ty: lambda_type,
-                            reason: (),
-                        }));*/
 
                         // Let's now remove and process the assumptions about the parameters.
                         // This expression was: lambda params -> expr : (input_types -> expr.type)
                         // Constraints: ts === input_types, for all assumptions that params : ts
-                        let param_assumptions = params
+                        let mut new_constraints = Vec::new();
+                        for (assumptions, param_type) in params
                             .iter()
-                            .map(|param| expr.assumptions.0.remove(&param.name))
-                            .map(|option| option.unwrap_or(vec![]))
-                            .collect::<Vec<_>>();
-                        for (assumptions, param_type) in
-                            param_assumptions.into_iter().zip(param_types)
+                            .map(|param| expr.assumptions.0.remove(&param.name).unwrap_or_default())
+                            .zip(param_types)
                         {
                             for assumption in assumptions {
-                                expr.constraints.0.push((
+                                new_constraints.push((
                                     TypeVariable::Unknown(param_type),
                                     Constraint::Equality {
                                         ty: TypeVariable::Unknown(assumption.0),
@@ -444,6 +421,7 @@ fn generate_constraints(
                                 ));
                             }
                         }
+                        expr.constraints.0.extend(new_constraints);
 
                         type_variable_definition_ranges
                             .extend(expr.type_variable_definition_ranges);
@@ -597,12 +575,8 @@ fn already_defined(module_path: &ModulePath, range: Range, previous_range: Range
 /// <https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.18.9348>.
 fn solve_type_constraints(
     module_path: &ModulePath,
-    project_index: &ProjectIndex,
-    args: &HashMap<String, BoundVariable>,
-    type_variable_definition_ranges: &HashMap<TypeVariableId, Range>,
     expr: ExpressionT,
     constraints: Constraints,
-    quantifiers: &[IdentifierP],
 ) -> DiagnosticResult<Expression> {
     //println!("Deducing type of {:#?}", expr);
     //println!("Constraints: {:#?}", constraints);
@@ -624,7 +598,6 @@ fn solve_type_constraints(
                 }
                 _ => mid_priority_constraints.push_back(constraint),
             },
-            Constraint::ExplicitInstance { .. } => mid_priority_constraints.push_back(constraint),
             Constraint::ImplicitInstance { .. } => mid_priority_constraints.push_back(constraint),
         }
     }
@@ -684,7 +657,6 @@ fn solve_type_constraint_queue(
                     }
                 }
             }
-            Constraint::ExplicitInstance { .. } => unimplemented!(),
             Constraint::ImplicitInstance {
                 scheme,
                 monotypes,
@@ -892,7 +864,6 @@ fn activevars(constraint_queue: &VecDeque<(TypeVariable, Constraint)>) -> HashSe
             Constraint::Equality { ty: other, .. } => {
                 result.extend(freevars(other));
             }
-            Constraint::ExplicitInstance { .. } => unimplemented!(),
             Constraint::ImplicitInstance {
                 scheme, monotypes, ..
             } => {
@@ -911,7 +882,6 @@ fn apply_substitution_to_constraints(
         apply_substitution(mgu, ty);
         match constraint {
             Constraint::Equality { ty: other, .. } => apply_substitution(mgu, other),
-            Constraint::ExplicitInstance { scheme, .. } => apply_substitution(mgu, scheme),
             Constraint::ImplicitInstance {
                 scheme, monotypes, ..
             } => {
