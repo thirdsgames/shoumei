@@ -7,7 +7,7 @@ use std::collections::{hash_map::Entry, HashMap, HashSet};
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
 use super::{
-    parser::{IdentifierP, ModuleP},
+    syntax_tree::{IdentifierP, ModuleP},
     type_resolve::{resolve_typep, Type},
     types::{DefinedName, ProjectTypesC},
     ModulePath, QualifiedName, Range,

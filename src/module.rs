@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{interpreter::*, Diagnostic, ErrorEmitter, ErrorMessage, Severity};
+use crate::{parser::*, Diagnostic, ErrorEmitter, ErrorMessage, Severity};
 
 /// Loads resources from disk, lexing and parsing them.
 pub struct ModuleLoader {

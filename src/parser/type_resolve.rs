@@ -9,7 +9,7 @@ use std::{
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
 use super::{
-    parser::{IdentifierP, TypeP},
+    syntax_tree::{IdentifierP, TypeP},
     type_check::TypeVariable,
     types::ProjectTypesC,
     ModulePath, QualifiedName,

@@ -4,7 +4,7 @@
 //! - `lexer`
 //! - `indent`
 //! - `brackets`
-//! - `parser`
+//! - `syntax_tree` (also known as the 'parser' in general)
 //! - `types` (after this step, `type_resolve` can be used)
 //! - `index` (after this step, `index_resolve` can be used)
 //! - `type_check`
@@ -41,7 +41,7 @@ pub mod indent;
 pub mod index;
 pub mod index_resolve;
 pub mod lexer;
-pub mod parser;
+pub mod syntax_tree;
 pub mod type_check;
 pub mod type_deduce;
 pub mod type_resolve;
@@ -191,7 +191,7 @@ pub fn parse(module_path: &ModulePath) -> DiagnosticResult<type_check::Module> {
         .deny()
         .bind(|token_block| brackets::process_brackets(module_path, token_block))
         .deny()
-        .bind(|token_block| parser::parse(module_path, token_block))
+        .bind(|token_block| syntax_tree::parse(module_path, token_block))
         .deny()
         .bind(|module| {
             let types = types::compute_types(module_path, &module);

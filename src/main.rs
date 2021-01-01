@@ -7,7 +7,7 @@ fn main() {
     let _ = app.get_matches();
 
     let mut loader = ModuleLoader::new(ErrorEmitter::new());
-    loader.load(interpreter::ModulePath(vec![
+    loader.load(parser::ModulePath(vec![
         String::from("input"),
         String::from("test"),
     ]));

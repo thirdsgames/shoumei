@@ -11,7 +11,7 @@ use std::{
 use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, Severity};
 
 use super::{
-    parser::{IdentifierP, ModuleP},
+    syntax_tree::{IdentifierP, ModuleP},
     ModulePath, Range,
 };
 

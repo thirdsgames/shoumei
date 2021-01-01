@@ -10,7 +10,7 @@ use crate::{Diagnostic, DiagnosticResult, ErrorMessage, HelpMessage, HelpType, S
 use super::{
     index::{ModuleIndex, ProjectIndex, TypeDeclarationTypeI},
     index_resolve::{resolve_symbol, resolve_type_constructor, TypeConstructorInvocation},
-    parser::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP},
+    syntax_tree::{DefinitionCaseP, ExpressionP, IdentifierP, ModuleP},
     type_deduce::deduce_expr_type,
     type_resolve::{Type, TypeVariableId},
     Location, ModulePath, QualifiedName, Range, Ranged,

@@ -2,7 +2,7 @@ use crate::{Diagnostic, DiagnosticResult, ErrorMessage, Severity};
 
 use super::{
     index::{ProjectIndex, SymbolI, TypeDeclarationTypeI},
-    parser::IdentifierP,
+    syntax_tree::IdentifierP,
     ModulePath, QualifiedName, Range,
 };
 

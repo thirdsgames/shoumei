@@ -8,7 +8,7 @@ use std::{
 
 use console::StyledObject;
 
-use crate::interpreter::{Location, ModulePath, Range};
+use crate::parser::{Location, ModulePath, Range};
 
 #[derive(Debug)]
 pub struct Diagnostic {
