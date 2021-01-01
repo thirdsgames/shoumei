@@ -464,6 +464,11 @@ pub enum TypeVariable {
         parameters: Vec<TypeVariable>,
     },
     Function(Box<TypeVariable>, Box<TypeVariable>),
+    /// A known type variable, e.g. `a`.
+    Variable(String),
+    /// A completely unknown type - we don't even have a type variable letter to describe it such as `a`.
+    /// These are assigned random IDs, and when printed are converted into Greek letters using the
+    /// `TypeVariablePrinter`.
     Unknown(TypeVariableId),
 }
 
@@ -505,6 +510,7 @@ impl TypeVariablePrinter {
                 format!("{} -> ({})", self.print(*l), self.print(*r))
             }
             TypeVariable::Unknown(ty) => self.get_name(&ty),
+            TypeVariable::Variable(name) => name,
         }
     }
 

@@ -162,7 +162,7 @@ pub fn deduce_expr_type(
         expr_type_check.constraints.0.push((
             expr_type_check.expr.type_variable.clone(),
             Constraint::Equality {
-                ty: expected_type.instantiate(),
+                ty: expected_type.as_variable(),
                 reason: ConstraintEqualityReason::ByDefinition {
                     expr: expr_type_check.expr.range(),
                     definition: definition_identifier_range,
@@ -204,7 +204,7 @@ fn generate_constraints(
                 // We don't need to add an assumption or constraint about this type variable, since it is known.
                 return DiagnosticResult::ok(ExprTypeCheck {
                     expr: ExpressionT {
-                        type_variable: arg.var_type.instantiate(),
+                        type_variable: arg.var_type.as_variable(),
                         contents: ExpressionContents::Argument(identifier),
                     },
                     type_variable_definition_ranges: HashMap::new(),
@@ -824,11 +824,37 @@ fn process_unification_error(
                 help,
             )
         }
+        UnificationError::VariableNameMismatch { name, other_name } => ErrorMessage::new_with_many(
+            format!("type variables {} and {} did not match", name, other_name,),
+            Severity::Error,
+            Diagnostic::at(module_path.clone(), error_range),
+            help,
+        ),
         UnificationError::NamedNotFunction { named_ty, func_ty } => ErrorMessage::new_with_many(
             format!(
                 "a data type {} was found, but it was expected to be a function of type {}",
                 ty_printer.print(named_ty),
                 ty_printer.print(func_ty)
+            ),
+            Severity::Error,
+            Diagnostic::at(module_path.clone(), error_range),
+            help,
+        ),
+        UnificationError::NamedNotVariable { named_ty, name } => ErrorMessage::new_with_many(
+            format!(
+                "a data type {} was found, but it was expected to be the type variable {}",
+                ty_printer.print(named_ty),
+                name,
+            ),
+            Severity::Error,
+            Diagnostic::at(module_path.clone(), error_range),
+            help,
+        ),
+        UnificationError::FunctionNotVariable { func_ty, name } => ErrorMessage::new_with_many(
+            format!(
+                "a function of type {} was found, but it was expected to be the type variable {}",
+                ty_printer.print(func_ty),
+                name,
             ),
             Severity::Error,
             Diagnostic::at(module_path.clone(), error_range),
@@ -852,6 +878,9 @@ fn freevars(ty: &TypeVariable) -> HashSet<TypeVariableId> {
             result.insert(*x);
             result
         }
+        // A type variable is not a free variable. It is bound by the function's signature, and
+        // cannot be quantified over.
+        TypeVariable::Variable(_) => HashSet::new(),
     }
 }
 
@@ -915,11 +944,20 @@ enum UnificationError {
         left: TypeVariable,
         right: TypeVariable,
     },
+    /// An expression was found to be of the type of two distinct variables.
+    VariableNameMismatch { name: String, other_name: String },
     /// One type was a named data type, the other type was a function.
     NamedNotFunction {
         named_ty: TypeVariable,
         func_ty: TypeVariable,
     },
+    /// One type was a named data type, the other type was a type variable quantified in the function signature.
+    NamedNotVariable {
+        named_ty: TypeVariable,
+        name: String,
+    },
+    /// One type was a named data type, the other type was a type variable quantified in the function signature.
+    FunctionNotVariable { func_ty: TypeVariable, name: String },
 }
 
 /// Returns a substitution which unifies the two types. If one could not be found, this is a type error, and None will be returned.
@@ -984,6 +1022,13 @@ fn most_general_unifier(
                         func_ty: TypeVariable::Function(right_param, right_result),
                     })
                 }
+                TypeVariable::Variable(name) => Err(UnificationError::NamedNotVariable {
+                    named_ty: TypeVariable::Named {
+                        name: left_name,
+                        parameters: left_parameters,
+                    },
+                    name,
+                }),
             }
         }
         TypeVariable::Unknown(left) => {
@@ -1010,8 +1055,32 @@ fn most_general_unifier(
                     map.insert(right, TypeVariable::Function(left_param, left_result));
                     Ok(map)
                 }
+                TypeVariable::Variable(name) => Err(UnificationError::FunctionNotVariable {
+                    func_ty: TypeVariable::Function(left_param, left_result),
+                    name,
+                }),
             }
         }
+        TypeVariable::Variable(name) => match right {
+            named_ty @ TypeVariable::Named { .. } => {
+                Err(UnificationError::NamedNotVariable { named_ty, name })
+            }
+            func_ty @ TypeVariable::Function(_, _) => {
+                Err(UnificationError::FunctionNotVariable { func_ty, name })
+            }
+            TypeVariable::Variable(other_name) => {
+                if other_name == name {
+                    Ok(HashMap::new())
+                } else {
+                    Err(UnificationError::VariableNameMismatch { name, other_name })
+                }
+            }
+            TypeVariable::Unknown(right) => {
+                let mut map = HashMap::new();
+                map.insert(right, TypeVariable::Variable(name));
+                Ok(map)
+            }
+        },
     }
 }
 
@@ -1160,5 +1229,6 @@ fn substitute_type(
                 Diagnostic::at(module_path.clone(), range),
             )),
         },
+        TypeVariable::Variable(name) => DiagnosticResult::ok(Type::Variable(name)),
     }
 }

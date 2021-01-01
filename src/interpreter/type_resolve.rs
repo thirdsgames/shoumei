@@ -97,6 +97,27 @@ impl Type {
             ),
         }
     }
+
+    /// You can convert a type into a type variable without quantifying over any variable types.
+    /// This is used primarily for arguments and return types of functions, in which we should never
+    /// quantify over the type variables.
+    pub fn as_variable(&self) -> TypeVariable {
+        match self {
+            Type::Named { name, parameters } => TypeVariable::Named {
+                name: name.clone(),
+                parameters: parameters
+                    .iter()
+                    .map(|p| p.as_variable())
+                    .collect::<Vec<_>>(),
+            },
+            Type::Function(l, r) => {
+                let l2 = l.as_variable();
+                let r2 = r.as_variable();
+                TypeVariable::Function(Box::new(l2), Box::new(r2))
+            }
+            Type::Variable(name) => TypeVariable::Variable(name.clone()),
+        }
+    }
 }
 
 /// An unknown type, used for intermediate values of expressions that we don't know the type of.

@@ -39,6 +39,9 @@ def id : forall a . a -> a
 def id2 : forall a . a -> a
     id2 = lambda x -> x
 
+def just : forall a . a -> Maybe a
+    just a = Just a
+
 def lambda_test : Bool -> Bool
     lambda_test a = (lambda b -> and a b) a
 
