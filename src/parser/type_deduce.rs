@@ -7,8 +7,8 @@ use super::{
     index_resolve::resolve_symbol,
     syntax_tree::{ExpressionP, IdentifierP},
     type_check::{
-        AbstractionVariable, BoundVariable, Expression, ExpressionContents, ExpressionT,
-        TypeVariable, TypeVariablePrinter,
+        AbstractionVariable, BoundVariable, Expression, ExpressionContents, ExpressionContentsT,
+        ExpressionT, TypeVariable, TypeVariablePrinter,
     },
     type_resolve::{Type, TypeVariableId},
     Location, ModulePath, QualifiedName, Range, Ranged,
@@ -196,7 +196,7 @@ fn generate_constraints(
                 return DiagnosticResult::ok(ExprTypeCheck {
                     expr: ExpressionT {
                         type_variable: arg.var_type.as_variable(),
-                        contents: ExpressionContents::Argument(identifier),
+                        contents: ExpressionContentsT::Argument(identifier),
                     },
                     type_variable_definition_ranges: HashMap::new(),
                     assumptions: Assumptions::default(),
@@ -213,7 +213,7 @@ fn generate_constraints(
                 return DiagnosticResult::ok(ExprTypeCheck {
                     expr: ExpressionT {
                         type_variable: TypeVariable::Unknown(type_variable),
-                        contents: ExpressionContents::MonotypeVariable(identifier),
+                        contents: ExpressionContentsT::MonotypeVariable(identifier),
                     },
                     type_variable_definition_ranges,
                     assumptions: Assumptions::new_with(identifier_name, Assumption(type_variable)),
@@ -229,7 +229,7 @@ fn generate_constraints(
                 return DiagnosticResult::ok(ExprTypeCheck {
                     expr: ExpressionT {
                         type_variable: TypeVariable::Unknown(type_variable),
-                        contents: ExpressionContents::PolytypeVariable(identifier),
+                        contents: ExpressionContentsT::PolytypeVariable(identifier),
                     },
                     type_variable_definition_ranges,
                     assumptions: Assumptions::new_with(identifier_name, Assumption(type_variable)),
@@ -244,16 +244,18 @@ fn generate_constraints(
             {
                 Some((symbol_module_path, symbol)) => {
                     // We don't need an assumption, we know what the type of this symbol is.
+                    let (type_variable, type_variables) = symbol.symbol_type.instantiate();
                     DiagnosticResult::ok(ExprTypeCheck {
                         expr: ExpressionT {
-                            type_variable: symbol.symbol_type.instantiate(),
-                            contents: ExpressionContents::Symbol {
+                            type_variable,
+                            contents: ExpressionContentsT::Symbol {
                                 name: QualifiedName {
                                     module_path: symbol_module_path.clone(),
                                     name: symbol.name.name.clone(),
                                     range: symbol.name.range,
                                 },
                                 range: identifier.range,
+                                type_variables,
                             },
                         },
                         type_variable_definition_ranges: HashMap::new(),
@@ -305,7 +307,7 @@ fn generate_constraints(
                     ExprTypeCheck {
                         expr: ExpressionT {
                             type_variable: result_type.clone(),
-                            contents: ExpressionContents::Apply(
+                            contents: ExpressionContentsT::Apply(
                                 Box::new(left.expr),
                                 Box::new(right.expr),
                             ),
@@ -440,7 +442,7 @@ fn generate_constraints(
                         ExprTypeCheck {
                             expr: ExpressionT {
                                 type_variable: lambda_type,
-                                contents: ExpressionContents::Lambda {
+                                contents: ExpressionContentsT::Lambda {
                                     lambda_token,
                                     params,
                                     expr: Box::new(expr.expr),
@@ -547,7 +549,7 @@ fn generate_constraints(
                         ExprTypeCheck {
                             expr: ExpressionT {
                                 type_variable: right_expr.expr.type_variable.clone(),
-                                contents: ExpressionContents::Let {
+                                contents: ExpressionContentsT::Let {
                                     let_token,
                                     identifier,
                                     left_expr: Box::new(left_expr.expr),
@@ -1188,54 +1190,88 @@ fn substitute(
         type_variable,
         contents,
     } = expr;
-    substitute_contents(substitution, contents, module_path).bind(|contents| {
-        let (ty, mut messages) =
-            substitute_type(substitution, type_variable.clone(), module_path, range).destructure();
 
-        // We only want to generate one error message, all the others will just say "could not deduce type of expression".
-        messages.truncate(1);
-        if let Some(message) = messages.get_mut(0) {
-            if message.help.is_empty() {
-                let mut tvp = TypeVariablePrinter::new(substitution.clone());
-                message.help.push(HelpMessage {
-                    message: format!(
-                        "best guess of expression type was {}",
-                        tvp.print(type_variable)
-                    ),
-                    help_type: HelpType::Note,
-                    diagnostic: Diagnostic::at(module_path.clone(), range),
-                })
-            }
-        }
+    let (ty, mut messages) =
+        substitute_type(substitution, type_variable.clone(), module_path, range).destructure();
 
-        match ty {
-            Some(ty) => DiagnosticResult::ok_with_many(Expression { ty, contents }, messages),
-            None => DiagnosticResult::fail_many(messages),
+    // We only want to generate one error message, all the others will just say "could not deduce type of expression".
+    messages.truncate(1);
+    if let Some(message) = messages.get_mut(0) {
+        if message.help.is_empty() {
+            let mut tvp = TypeVariablePrinter::new(substitution.clone());
+            message.help.push(HelpMessage {
+                message: format!(
+                    "best guess of expression type was {}",
+                    tvp.print(type_variable)
+                ),
+                help_type: HelpType::Note,
+                diagnostic: Diagnostic::at(module_path.clone(), range),
+            })
         }
-    })
+    }
+
+    match ty {
+        Some(ty) => substitute_contents(substitution, contents, module_path)
+            .bind(|contents| DiagnosticResult::ok_with_many(Expression { ty, contents }, messages)),
+        None => DiagnosticResult::fail_many(messages),
+    }
 }
 
 fn substitute_contents(
     substitution: &HashMap<TypeVariableId, TypeVariable>,
-    contents: ExpressionContents<ExpressionT>,
+    contents: ExpressionContentsT,
     module_path: &ModulePath,
-) -> DiagnosticResult<ExpressionContents<Expression>> {
+) -> DiagnosticResult<ExpressionContents> {
     match contents {
-        ExpressionContents::Argument(a) => DiagnosticResult::ok(ExpressionContents::Argument(a)),
-        ExpressionContents::MonotypeVariable(a) => {
+        ExpressionContentsT::Argument(a) => DiagnosticResult::ok(ExpressionContents::Argument(a)),
+        ExpressionContentsT::MonotypeVariable(a) => {
             DiagnosticResult::ok(ExpressionContents::MonotypeVariable(a))
         }
-        ExpressionContents::PolytypeVariable(a) => {
+        ExpressionContentsT::PolytypeVariable(a) => {
             DiagnosticResult::ok(ExpressionContents::PolytypeVariable(a))
         }
-        ExpressionContents::Symbol { name, range } => {
-            DiagnosticResult::ok(ExpressionContents::Symbol { name, range })
+        ExpressionContentsT::Symbol {
+            name,
+            range,
+            type_variables,
+        } => {
+            // Check that all the type variables for this symbol are known.
+            let type_variables = type_variables
+                .iter()
+                .map(|(ty_name, ty_id)| {
+                    let (ty, mut messages) = substitute_type(
+                        substitution,
+                        TypeVariable::Unknown(*ty_id),
+                        module_path,
+                        Location { line: 0, col: 0 }.into(),
+                    )
+                    .destructure();
+                    // The error message, if present, needs to be customised to state that the proble, is with the type variable.
+                    if let Some(ty) = ty {
+                        DiagnosticResult::ok_with_many(ty, messages)
+                    } else {
+                        DiagnosticResult::fail(ErrorMessage::new(
+                            format!(
+                                "type variable {} from {} could not be deduced",
+                                ty_name, name
+                            ),
+                            Severity::Error,
+                            Diagnostic::at(module_path.clone(), range),
+                        ))
+                    }
+                })
+                .collect::<DiagnosticResult<Vec<Type>>>();
+            type_variables.map(|type_variables| ExpressionContents::Symbol {
+                name,
+                range,
+                type_variables,
+            })
         }
-        ExpressionContents::Apply(l, r) => substitute(substitution, *l, module_path).bind(|l| {
+        ExpressionContentsT::Apply(l, r) => substitute(substitution, *l, module_path).bind(|l| {
             substitute(substitution, *r, module_path)
                 .map(|r| ExpressionContents::Apply(Box::new(l), Box::new(r)))
         }),
-        ExpressionContents::Lambda {
+        ExpressionContentsT::Lambda {
             lambda_token,
             params,
             expr,
@@ -1244,7 +1280,7 @@ fn substitute_contents(
             params,
             expr: Box::new(expr),
         }),
-        ExpressionContents::Let {
+        ExpressionContentsT::Let {
             let_token,
             identifier,
             left_expr,
@@ -1259,6 +1295,9 @@ fn substitute_contents(
                 }
             })
         }),
+        ExpressionContentsT::CreateData { .. } => {
+            panic!("should not have explicit data constructor here")
+        }
     }
 }
 

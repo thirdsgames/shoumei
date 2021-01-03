@@ -44,5 +44,8 @@ def lambda_test : Bool -> Bool
 def and3 : Bool -> Bool -> Bool
     and3 a b = let x = and a b in and x x
 
-def infinite_type : Bool
-    infinite_type = lambda x -> x x
+def testfn : Maybe Bool
+    testfn = Just True
+
+def test_two : TruthTable
+    test_two = TruthTable True False (and True False) (and True True)

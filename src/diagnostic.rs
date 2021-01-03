@@ -520,10 +520,12 @@ impl ErrorEmitter {
         }
     }
 
-    pub fn emit_all(mut self) {
+    /// Displays all error and warning messages. If an error was emitted, returns true.
+    pub fn emit_all(mut self) -> bool {
         let warnings = std::mem::take(&mut self.warnings);
         for message in warnings {
             self.emit(message);
         }
+        self.has_emitted_error
     }
 }

@@ -37,17 +37,24 @@ impl Display for Module {
 /// A definition for a symbol, i.e. a function or constant.
 #[derive(Debug)]
 pub struct Definition {
+    range: Range,
     /// The `forall` definition at the start of this definition.
-    quantifiers: Vec<String>,
-    symbol_type: Type,
-    cases: Vec<DefinitionCase>,
+    pub quantifiers: Vec<String>,
+    pub symbol_type: Type,
+    pub cases: Vec<DefinitionCase>,
+}
+
+impl Ranged for Definition {
+    fn range(&self) -> Range {
+        self.range
+    }
 }
 
 #[derive(Debug)]
 pub struct DefinitionCase {
     range: Range,
-    arg_patterns: Vec<Pattern>,
-    replacement: Expression,
+    pub arg_patterns: Vec<Pattern>,
+    pub replacement: Expression,
 }
 
 /// A pattern made up of type constructors and potential unknowns.
@@ -445,7 +452,7 @@ pub struct AbstractionVariable {
 #[derive(Debug)]
 pub struct ExpressionT {
     pub type_variable: TypeVariable,
-    pub contents: ExpressionContents<Self>,
+    pub contents: ExpressionContentsT,
 }
 
 impl Ranged for ExpressionT {
@@ -557,7 +564,7 @@ impl TypeVariablePrinter {
 #[derive(Debug)]
 pub struct Expression {
     pub ty: Type,
-    pub contents: ExpressionContents<Self>,
+    pub contents: ExpressionContents,
 }
 
 impl Ranged for Expression {
@@ -567,8 +574,10 @@ impl Ranged for Expression {
 }
 
 /// Represents the contents of an expression (which may or may not have been already type checked).
+/// The type `T` represents the type variables that we are substituting into this symbol.
+/// You should use `ExpressionContents` or `ExpressionContentsT` instead of this enum directly.
 #[derive(Debug)]
-pub enum ExpressionContents<E> {
+pub enum ExpressionContentsGeneric<E, T> {
     /// An argument to this function e.g. `x`.
     Argument(IdentifierP),
     /// A local variable declared by a `lambda` expression.
@@ -581,6 +590,10 @@ pub enum ExpressionContents<E> {
         name: QualifiedName,
         /// The range where the symbol's name was written in this file.
         range: Range,
+        /// The type variables we're substituting into this symbol.
+        /// If using an `ExpressionT`, this should be a vector of `TypeVariable`.
+        /// If using an `Expression`, this should be a vector of `Type`.
+        type_variables: T,
     },
     /// Apply the left hand side to the right hand side, e.g. `a b`.
     /// More complicated expressions e.g. `a b c d` can be desugared into `((a b) c) d`.
@@ -598,30 +611,42 @@ pub enum ExpressionContents<E> {
         left_expr: Box<E>,
         right_expr: Box<E>,
     },
+    /// Explicitly create a value on a data type. This expression type cannot be
+    /// created in code, it is implicitly created when defining a type constructor.
+    CreateData {
+        data_type_name: QualifiedName,
+        type_ctor: String,
+        args: Vec<E>,
+    },
 }
 
-impl<E> Ranged for ExpressionContents<E>
+impl<E, T> Ranged for ExpressionContentsGeneric<E, T>
 where
     E: Ranged,
 {
     fn range(&self) -> Range {
         match self {
-            ExpressionContents::Argument(arg) => arg.range,
-            ExpressionContents::MonotypeVariable(var) => var.range,
-            ExpressionContents::PolytypeVariable(var) => var.range,
-            ExpressionContents::Symbol { range, .. } => *range,
-            ExpressionContents::Apply(l, r) => l.range().union(r.range()),
-            ExpressionContents::Lambda {
+            ExpressionContentsGeneric::Argument(arg) => arg.range,
+            ExpressionContentsGeneric::MonotypeVariable(var) => var.range,
+            ExpressionContentsGeneric::PolytypeVariable(var) => var.range,
+            ExpressionContentsGeneric::Symbol { range, .. } => *range,
+            ExpressionContentsGeneric::Apply(l, r) => l.range().union(r.range()),
+            ExpressionContentsGeneric::Lambda {
                 lambda_token, expr, ..
             } => lambda_token.union(expr.range()),
-            ExpressionContents::Let {
+            ExpressionContentsGeneric::Let {
                 let_token,
                 right_expr,
                 ..
             } => let_token.union(right_expr.range()),
+            ExpressionContentsGeneric::CreateData { .. } => Location { line: 0, col: 0 }.into(),
         }
     }
 }
+
+pub type ExpressionContents = ExpressionContentsGeneric<Expression, Vec<Type>>;
+pub type ExpressionContentsT =
+    ExpressionContentsGeneric<ExpressionT, HashMap<String, TypeVariableId>>;
 
 impl<'a> TypeChecker<'a> {
     fn compute(mut self, module: ModuleP) -> DiagnosticResult<Module> {
@@ -671,6 +696,7 @@ impl<'a> TypeChecker<'a> {
                 definitions.insert(
                     def_ident.name,
                     Definition {
+                        range: def_ident.range,
                         quantifiers: quantifiers.iter().map(|id| id.name.clone()).collect(),
                         symbol_type: symbol_type.clone(),
                         cases: cases
@@ -683,6 +709,77 @@ impl<'a> TypeChecker<'a> {
                             .collect(),
                     },
                 );
+            }
+        }
+
+        for data in module.data {
+            let quantifiers = data
+                .type_params
+                .iter()
+                .map(|id| id.name.clone())
+                .collect::<Vec<String>>();
+            let data_type_name = QualifiedName {
+                module_path: self.module_path.clone(),
+                name: data.identifier.name.clone(),
+                range: data.identifier.range,
+            };
+            let data_type = Type::Named {
+                name: data_type_name.clone(),
+                parameters: data
+                    .type_params
+                    .iter()
+                    .map(|id| Type::Variable(id.name.clone()))
+                    .collect(),
+            };
+
+            for type_ctor in data.type_ctors {
+                let symbol_type = self.project_index[self.module_path].symbols[&type_ctor.id.name]
+                    .symbol_type
+                    .clone();
+                let (arg_types, _) =
+                    get_args_of_type_arity(&symbol_type, type_ctor.arguments.len());
+
+                let case = DefinitionCase {
+                    range: type_ctor.id.range,
+                    arg_patterns: type_ctor
+                        .arguments
+                        .iter()
+                        .enumerate()
+                        .map(|(i, ty)| {
+                            Pattern::Named(IdentifierP {
+                                name: format!("_{}", i),
+                                range: ty.range(),
+                            })
+                        })
+                        .collect(),
+                    replacement: Expression {
+                        ty: data_type.clone(),
+                        contents: ExpressionContents::CreateData {
+                            data_type_name: data_type_name.clone(),
+                            type_ctor: type_ctor.id.name.clone(),
+                            args: type_ctor
+                                .arguments
+                                .iter()
+                                .enumerate()
+                                .map(|(i, ty)| Expression {
+                                    ty: arg_types[i].clone(),
+                                    contents: ExpressionContents::Argument(IdentifierP {
+                                        name: format!("_{}", i),
+                                        range: ty.range(),
+                                    }),
+                                })
+                                .collect(),
+                        },
+                    },
+                };
+
+                let definition = Definition {
+                    range: type_ctor.id.range,
+                    quantifiers: quantifiers.clone(),
+                    symbol_type,
+                    cases: vec![case],
+                };
+                definitions.insert(type_ctor.id.name, definition);
             }
         }
 

@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use type_check::{Definition, Module};
+
 use crate::{parser::*, Diagnostic, ErrorEmitter, ErrorMessage, Severity};
 
 /// Loads resources from disk, lexing and parsing them.
@@ -8,8 +10,8 @@ pub struct ModuleLoader {
     /// We can use this to track circular inclusions.
     currently_loading: HashSet<ModulePath>,
     /// A map containing all lexed and parsed modules.
-    /// If a module could not be parsed, the result here is None to show that
-    modules: HashMap<ModulePath, Option<type_check::Module>>,
+    /// If a module could not be parsed, the result here is None to show that the module was loaded but not parsed.
+    modules: HashMap<ModulePath, Option<Module>>,
     error_emitter: ErrorEmitter,
 }
 
@@ -47,5 +49,19 @@ impl ModuleLoader {
     /// Call this to retrieve all errors emitted while loading the modules.
     pub fn take_error_emitter(&mut self) -> ErrorEmitter {
         std::mem::take(&mut self.error_emitter)
+    }
+
+    /// Returns the module at the given path, if it was loaded and parsed correctly.
+    pub fn module(&self, module_path: &ModulePath) -> Option<&Module> {
+        self.modules
+            .get(module_path)
+            .map(|inner| inner.as_ref())
+            .flatten()
+    }
+
+    /// Returns the definition with the given name, if it was loaded and parsed correctly.
+    pub fn definition(&self, name: &QualifiedName) -> Option<&Definition> {
+        self.module(&name.module_path)
+            .and_then(|module| module.definitions.get(&name.name))
     }
 }

@@ -71,8 +71,11 @@ impl Type {
 
     /// You can instantiate a type into a type variable,
     /// by letting all unknown variables be polymorphic type variables, over which the type is quantified.
-    pub fn instantiate(&self) -> TypeVariable {
-        self.instantiate_with(&mut HashMap::new())
+    /// This function returns the type variable, along with the map of quantifier names to type variable IDs.
+    pub fn instantiate(&self) -> (TypeVariable, HashMap<String, TypeVariableId>) {
+        let mut map = HashMap::new();
+        let result = self.instantiate_with(&mut map);
+        (result, map)
     }
 
     /// While we're instantiating a type, we need to keep track of all of the named type variables

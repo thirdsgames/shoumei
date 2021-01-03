@@ -1,3 +1,4 @@
+use shoumei::parser::Ranged;
 use shoumei::*;
 
 fn main() {
@@ -6,10 +7,75 @@ fn main() {
     let app = clap::App::from_yaml(yaml);
     let _ = app.get_matches();
 
-    let mut loader = ModuleLoader::new(ErrorEmitter::new());
-    loader.load(parser::ModulePath(vec![
+    let mut module_loader = ModuleLoader::new(ErrorEmitter::new());
+    module_loader.load(parser::ModulePath(vec![
         String::from("input"),
         String::from("test"),
     ]));
-    loader.take_error_emitter().emit_all();
+    if !module_loader.take_error_emitter().emit_all() {
+        // No errors. Execute some test functions.
+        let module = module_loader
+            .module(&parser::ModulePath(vec![
+                String::from("input"),
+                String::from("test"),
+            ]))
+            .unwrap();
+        let func = &module.definitions["testfn"];
+
+        print_evaluated(
+            &module_loader,
+            runtime::value::Function::from_name(
+                &module_loader,
+                parser::QualifiedName {
+                    module_path: parser::ModulePath(vec![
+                        String::from("input"),
+                        String::from("test"),
+                    ]),
+                    name: "testfn".to_string(),
+                    range: func.range(),
+                },
+            )
+            .unwrap()
+            .apply_zero_args()
+            .into(),
+        );
+        println!();
+
+        print_evaluated(
+            &module_loader,
+            runtime::value::Function::from_name(
+                &module_loader,
+                parser::QualifiedName {
+                    module_path: parser::ModulePath(vec![
+                        String::from("input"),
+                        String::from("test"),
+                    ]),
+                    name: "test_two".to_string(),
+                    range: func.range(),
+                },
+            )
+            .unwrap()
+            .apply_zero_args()
+            .into(),
+        );
+        println!();
+    }
+}
+
+fn print_evaluated<'ml>(module_loader: &'ml ModuleLoader, value: runtime::value::ValueRef<'ml>) {
+    let result = runtime::Runtime::evaluate(&module_loader, value);
+    match result {
+        runtime::value::Value::Data(data) => {
+            print!("{}", data.type_ctor);
+            for param in data.args {
+                print!(" (");
+                print_evaluated(module_loader, param);
+                print!(")");
+            }
+        }
+        runtime::value::Value::Function(func) => {
+            println!("<function of arity {}>", func.arity())
+        }
+        runtime::value::Value::Apply(_) => panic!("should never return an `Apply`"),
+    }
 }
