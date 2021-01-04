@@ -76,6 +76,10 @@ fn print_evaluated<'ml>(module_loader: &'ml ModuleLoader, value: runtime::value:
         runtime::value::Value::Function(func) => {
             println!("<function of arity {}>", func.arity())
         }
+        runtime::value::Value::Lambda(lambda) => {
+            println!("<lambda of arity {}>", lambda.params.len())
+        }
         runtime::value::Value::Apply(_) => panic!("should never return an `Apply`"),
+        runtime::value::Value::Let(_) => panic!("should never return a `Let`"),
     }
 }

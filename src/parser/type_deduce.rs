@@ -1239,7 +1239,7 @@ fn substitute_contents(
             let type_variables = type_variables
                 .iter()
                 .map(|(ty_name, ty_id)| {
-                    let (ty, mut messages) = substitute_type(
+                    let (ty, messages) = substitute_type(
                         substitution,
                         TypeVariable::Unknown(*ty_id),
                         module_path,

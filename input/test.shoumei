@@ -48,4 +48,5 @@ def testfn : Maybe Bool
     testfn = Just True
 
 def test_two : TruthTable
-    test_two = TruthTable True False (and True False) (and True True)
+    test_two = TruthTable (id True) (lambda_test True) (lambda_test False) (and True True)
+

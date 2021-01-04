@@ -104,7 +104,11 @@ impl<'ml> Runtime<'ml> {
                     // Do the function arguments match this case?
                     match self.args_match_pattern(&apply.args, &case.arg_patterns) {
                         Ok(bindings) => {
-                            return self.evaluate_expression(&bindings, &case.replacement);
+                            return self.evaluate_expression(
+                                &bindings,
+                                &HashMap::new(),
+                                &case.replacement,
+                            );
                         }
                         Err(MatchError::NotMatched) => {}
                         Err(MatchError::Evaluate { thunk }) => {
@@ -124,6 +128,47 @@ impl<'ml> Runtime<'ml> {
                 // the inner function.
                 inner_apply.args.append(&mut apply.args);
                 self.evaluate_apply(inner_apply)
+            }
+            Value::Lambda(lambda) => {
+                // The left hand side of the application has been evaluated as a lambda expression,
+                // so we can try to invoke it.
+
+                // Does the thunk have the right arity? We could be trying to apply a 2-ary function to only one value, for example.
+                if apply.args.len() != lambda.arity() {
+                    // We don't have the right amount of arguments to execute the function.
+                    panic!("incorrect number of arguments for function arity")
+                }
+
+                // Lambda expressions contain no pattern matching. Let's simply substitute the arguments into the lambda body.
+                let mut bound_variables = lambda.function_bound_variables.clone();
+                // Bind the new variables.
+                bound_variables.extend(
+                    lambda
+                        .params
+                        .iter()
+                        .cloned()
+                        .zip(apply.args.iter().cloned()),
+                );
+                self.evaluate_expression(&lambda.function_arguments, &bound_variables, &lambda.expr)
+            }
+            Value::Let(let_expr) => {
+                // A let expression involves substituting the `left_expr` into the `right_expr`.
+                // We can accomplish this by inserting the `left_expr` into the `bound_variables` of the `right_expr`.
+                self.evaluate_expression(
+                    &let_expr.function_arguments,
+                    &let_expr.function_bound_variables,
+                    &let_expr.left_expr,
+                )
+                .and_then(|left| {
+                    // We have evaluated the `left_expr`.
+                    let mut bound_variables = let_expr.function_bound_variables.clone();
+                    bound_variables.insert(let_expr.var_name.clone(), left.into());
+                    self.evaluate_expression(
+                        &let_expr.function_arguments,
+                        &bound_variables,
+                        &let_expr.right_expr,
+                    )
+                })
             }
         }
     }
@@ -199,6 +244,8 @@ impl<'ml> Runtime<'ml> {
     /// If any dependencies are generated, they are pushed onto the stack.
     /// Otherwise, a result is acquired, and it is returned.
     ///
+    /// `bound_variables` contains all the monotype and polytype variables created in this scope.
+    ///
     /// TODO This method is slightly inefficient. We return a cloned `Value` instead of a `ValueRef` so that
     /// we can update the contents of a thunk's `ValueRef`. Perhaps it would be more efficient to add
     /// another level of indirection in order to avoid this clone - or maybe the processor's optimisations
@@ -207,12 +254,13 @@ impl<'ml> Runtime<'ml> {
     fn evaluate_expression(
         &mut self,
         arguments: &HashMap<String, ValueRef<'ml>>,
-        expression: &Expression,
+        bound_variables: &HashMap<String, ValueRef<'ml>>,
+        expression: &'ml Expression,
     ) -> Option<Value<'ml>> {
         match &expression.contents {
             ExpressionContents::Argument(arg) => Some(arguments[&arg.name].0.borrow().clone()),
-            ExpressionContents::MonotypeVariable(_) => todo!(),
-            ExpressionContents::PolytypeVariable(_) => todo!(),
+            ExpressionContents::MonotypeVariable(var) => Some(bound_variables[&var.name].0.borrow().clone()),
+            ExpressionContents::PolytypeVariable(var) => Some(bound_variables[&var.name].0.borrow().clone()),
             ExpressionContents::Symbol {
                 name,
                 type_variables,
@@ -226,8 +274,8 @@ impl<'ml> Runtime<'ml> {
                 ))
             }
             ExpressionContents::Apply(l, r) => {
-                let l = self.evaluate_expression(arguments, &l);
-                let r = self.evaluate_expression(arguments, &r);
+                let l = self.evaluate_expression(arguments, bound_variables, &l);
+                let r = self.evaluate_expression(arguments, bound_variables, &r);
                 if let Some((l, r)) = l.zip(r) {
                     Some(Value::Apply(Apply {
                         function: l.into(),
@@ -237,17 +285,33 @@ impl<'ml> Runtime<'ml> {
                     None
                 }
             }
-            ExpressionContents::Lambda {
-                lambda_token,
-                params,
-                expr,
-            } => todo!(),
+            ExpressionContents::Lambda { params, expr, .. } => {
+                // Create this lambda expression.
+                Some(Value::Apply(
+                    Lambda {
+                        function_arguments: arguments.clone(),
+                        function_bound_variables: bound_variables.clone(),
+                        expr,
+                        params: params.iter().map(|id| id.name.clone()).collect(),
+                    }
+                    .apply_zero_args(),
+                ))
+            }
             ExpressionContents::Let {
-                let_token,
                 identifier,
                 left_expr,
                 right_expr,
-            } => todo!(),
+                ..
+            } => {
+                // Create this let expression.
+                Some(Value::Let(Let {
+                    function_arguments: arguments.clone(),
+                    function_bound_variables: bound_variables.clone(),
+                    left_expr,
+                    right_expr,
+                    var_name: identifier.name.clone(),
+                }))
+            }
             ExpressionContents::CreateData {
                 data_type_name,
                 type_ctor,
@@ -256,7 +320,7 @@ impl<'ml> Runtime<'ml> {
                 let args = args
                     .iter()
                     .map(|expr| {
-                        self.evaluate_expression(arguments, expr)
+                        self.evaluate_expression(arguments, bound_variables, expr)
                             .map(ValueRef::from)
                     })
                     .collect::<Option<Vec<_>>>();

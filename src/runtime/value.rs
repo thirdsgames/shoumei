@@ -1,9 +1,12 @@
 //! A value is a constant expression, or a thunk to be evaluated.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use crate::{
-    parser::{type_check::DefinitionCase, QualifiedName},
+    parser::{
+        type_check::{DefinitionCase, Expression},
+        QualifiedName,
+    },
     ModuleLoader,
 };
 
@@ -11,11 +14,15 @@ use crate::{
 /// - data. It has a known type and type constructor. The arguments, if any, are also values.
 /// - function. A lambda or a symbol from global scope.
 /// - apply. An application of a function. The left hand side must be a function value.
+/// - lambda. A lambda expression, created in this scope or provided by some other function.
+/// - let. A let...in expression.
 #[derive(Debug, Clone)]
 pub enum Value<'ml> {
     Data(Data<'ml>),
     Function(Function<'ml>),
     Apply(Apply<'ml>),
+    Lambda(Lambda<'ml>),
+    Let(Let<'ml>),
 }
 
 /// A ValueRef is a value that may be shared between multiple places. It may be (or contain) a thunk
@@ -49,16 +56,24 @@ impl<'ml> From<Data<'ml>> for Value<'ml> {
         Value::Data(data)
     }
 }
-
 impl<'ml> From<Function<'ml>> for Value<'ml> {
     fn from(function: Function<'ml>) -> Self {
         Value::Function(function)
     }
 }
-
 impl<'ml> From<Apply<'ml>> for Value<'ml> {
     fn from(apply: Apply<'ml>) -> Self {
         Value::Apply(apply)
+    }
+}
+impl<'ml> From<Lambda<'ml>> for Value<'ml> {
+    fn from(lambda: Lambda<'ml>) -> Self {
+        Value::Lambda(lambda)
+    }
+}
+impl<'ml> From<Let<'ml>> for Value<'ml> {
+    fn from(let_val: Let<'ml>) -> Self {
+        Value::Let(let_val)
     }
 }
 
@@ -73,16 +88,24 @@ impl<'ml> From<Data<'ml>> for ValueRef<'ml> {
         Value::from(data).into()
     }
 }
-
 impl<'ml> From<Function<'ml>> for ValueRef<'ml> {
     fn from(function: Function<'ml>) -> Self {
         Value::from(function).into()
     }
 }
-
 impl<'ml> From<Apply<'ml>> for ValueRef<'ml> {
     fn from(apply: Apply<'ml>) -> Self {
         Value::from(apply).into()
+    }
+}
+impl<'ml> From<Lambda<'ml>> for ValueRef<'ml> {
+    fn from(lambda: Lambda<'ml>) -> Self {
+        Value::from(lambda).into()
+    }
+}
+impl<'ml> From<Let<'ml>> for ValueRef<'ml> {
+    fn from(let_val: Let<'ml>) -> Self {
+        Value::from(let_val).into()
     }
 }
 
@@ -126,6 +149,48 @@ impl<'ml> Function<'ml> {
 /// the function is invoked.
 #[derive(Debug, Clone)]
 pub struct Apply<'ml> {
+    /// The function may be a `Function` or a `Lambda`.
     pub function: ValueRef<'ml>,
     pub args: Vec<ValueRef<'ml>>,
+}
+
+/// A lambda expression.
+#[derive(Debug, Clone)]
+pub struct Lambda<'ml> {
+    /// The arguments to the function the lambda was created in.
+    pub function_arguments: HashMap<String, ValueRef<'ml>>,
+    /// The other bound variables created in the lambda's scope, e.g. monotype or polytype variables.
+    pub function_bound_variables: HashMap<String, ValueRef<'ml>>,
+    /// The expression we're replacing the list of parameters with.
+    pub expr: &'ml Expression,
+    /// The list of parameter names for this lambda.
+    pub params: Vec<String>,
+}
+
+impl<'ml> Lambda<'ml> {
+    pub fn arity(&self) -> usize {
+        self.params.len()
+    }
+
+    pub fn apply_zero_args(self) -> Apply<'ml> {
+        Apply {
+            function: self.into(),
+            args: Vec::new(),
+        }
+    }
+}
+
+/// A let expression.
+#[derive(Debug, Clone)]
+pub struct Let<'ml> {
+    /// The arguments to the function the lambda was created in.
+    pub function_arguments: HashMap<String, ValueRef<'ml>>,
+    /// The other bound variables created in the lambda's scope, e.g. monotype or polytype variables.
+    pub function_bound_variables: HashMap<String, ValueRef<'ml>>,
+    /// The expression we're assigning to a new variable.
+    pub left_expr: &'ml Expression,
+    /// The expression we're substituting into.
+    pub right_expr: &'ml Expression,
+    /// The name of the new variable.
+    pub var_name: String,
 }
