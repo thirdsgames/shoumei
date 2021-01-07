@@ -14,52 +14,38 @@ fn main() {
     ]));
     if !module_loader.take_error_emitter().emit_all() {
         // No errors. Execute some test functions.
-        let module = module_loader
-            .module(&parser::ModulePath(vec![
-                String::from("input"),
-                String::from("test"),
-            ]))
-            .unwrap();
-        let func = &module.definitions["testfn"];
-
-        print_evaluated(
-            &module_loader,
-            runtime::value::Function::from_name(
-                &module_loader,
-                parser::QualifiedName {
-                    module_path: parser::ModulePath(vec![
-                        String::from("input"),
-                        String::from("test"),
-                    ]),
-                    name: "testfn".to_string(),
-                    range: func.range(),
-                },
-            )
-            .unwrap()
-            .apply_zero_args()
-            .into(),
-        );
-        println!();
-
-        print_evaluated(
-            &module_loader,
-            runtime::value::Function::from_name(
-                &module_loader,
-                parser::QualifiedName {
-                    module_path: parser::ModulePath(vec![
-                        String::from("input"),
-                        String::from("test"),
-                    ]),
-                    name: "test_two".to_string(),
-                    range: func.range(),
-                },
-            )
-            .unwrap()
-            .apply_zero_args()
-            .into(),
-        );
-        println!();
+        
+        test_func(&module_loader, "testfn");
+        test_func(&module_loader, "test_two");
+        test_func(&module_loader, "test_three");
     }
+}
+
+fn test_func<'ml>(module_loader: &'ml ModuleLoader, function: impl ToString) {
+    let module_path = parser::ModulePath(vec![
+        String::from("input"),
+        String::from("test"),
+    ]);
+    let range = module_loader.definition(&parser::QualifiedName {
+        module_path: module_path.clone(),
+        name: function.to_string(),
+        range: parser::Location { line: 0, col: 0 }.into(),
+    }).unwrap().range();
+    print_evaluated(
+        &module_loader,
+        runtime::value::Function::from_name(
+            &module_loader,
+            parser::QualifiedName {
+                module_path,
+                name: function.to_string(),
+                range,
+            },
+        )
+        .unwrap()
+        .apply_zero_args()
+        .into(),
+    );
+    println!();
 }
 
 fn print_evaluated<'ml>(module_loader: &'ml ModuleLoader, value: runtime::value::ValueRef<'ml>) {

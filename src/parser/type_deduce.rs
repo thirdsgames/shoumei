@@ -746,7 +746,17 @@ fn fix_infinite_type(
     let erroneous_substitutions = to_remove
         .iter()
         .map(|k| substitution.remove_entry(k).unwrap())
+        .filter(|(substitution_id, substitution_replacement)| {
+            // Check if the constraint simply maps a type to itself.
+            // This is a valid deduction, but must be removed since it results in an infinite loop.
+            if let TypeVariable::Unknown(substitution_replacement_id) = substitution_replacement {
+                substitution_replacement_id != substitution_id
+            } else {
+                true
+            }
+        })
         .collect::<Vec<_>>();
+
     if erroneous_substitutions.is_empty() {
         Ok(())
     } else {

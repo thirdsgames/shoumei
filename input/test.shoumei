@@ -48,5 +48,7 @@ def testfn : Maybe Bool
     testfn = Just True
 
 def test_two : TruthTable
-    test_two = TruthTable (id True) (lambda_test True) (lambda_test False) (and True True)
+    test_two = TruthTable (id True) (lambda_test True) (lambda_test False) (let a = and True True in a)
 
+def test_three : Maybe TruthTable
+    test_three = let table = (TruthTable (id True) (lambda_test True) (lambda_test False) (and True True)) in Just table
