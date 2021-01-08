@@ -52,3 +52,12 @@ def test_two : TruthTable
 
 def test_three : Maybe TruthTable
     test_three = let table = (TruthTable (id True) (lambda_test True) (lambda_test False) (and True True)) in Just table
+
+data Int = Zero | S Int
+
+def add : Int -> Int -> Int
+    add a Zero = a
+    add a (S b) = S (add a b)
+
+def add_test : Int
+    add_test = add (S (S (S Zero))) (S (S (S (S (Zero)))))

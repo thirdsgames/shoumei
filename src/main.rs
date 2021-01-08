@@ -14,23 +14,23 @@ fn main() {
     ]));
     if !module_loader.take_error_emitter().emit_all() {
         // No errors. Execute some test functions.
-        
         test_func(&module_loader, "testfn");
         test_func(&module_loader, "test_two");
         test_func(&module_loader, "test_three");
+        test_func(&module_loader, "add_test");
     }
 }
 
-fn test_func<'ml>(module_loader: &'ml ModuleLoader, function: impl ToString) {
-    let module_path = parser::ModulePath(vec![
-        String::from("input"),
-        String::from("test"),
-    ]);
-    let range = module_loader.definition(&parser::QualifiedName {
-        module_path: module_path.clone(),
-        name: function.to_string(),
-        range: parser::Location { line: 0, col: 0 }.into(),
-    }).unwrap().range();
+fn test_func(module_loader: &ModuleLoader, function: impl ToString) {
+    let module_path = parser::ModulePath(vec![String::from("input"), String::from("test")]);
+    let range = module_loader
+        .definition(&parser::QualifiedName {
+            module_path: module_path.clone(),
+            name: function.to_string(),
+            range: parser::Location { line: 0, col: 0 }.into(),
+        })
+        .unwrap()
+        .range();
     print_evaluated(
         &module_loader,
         runtime::value::Function::from_name(
@@ -45,17 +45,33 @@ fn test_func<'ml>(module_loader: &'ml ModuleLoader, function: impl ToString) {
         .apply_zero_args()
         .into(),
     );
-    println!();
 }
 
 fn print_evaluated<'ml>(module_loader: &'ml ModuleLoader, value: runtime::value::ValueRef<'ml>) {
-    let result = runtime::Runtime::evaluate(&module_loader, value);
-    match result {
+    let runtime::EvaluationProfile {
+        value,
+        max_stack_depth,
+        max_result_depth,
+        stack_overflow,
+    } = runtime::Runtime::evaluate(&module_loader, value);
+
+    print_value(&value);
+    println!();
+
+    println!("Computation statistics:");
+    println!("- maximum stack depth: {}", max_stack_depth);
+    println!("- maximum result depth: {}", max_result_depth);
+    println!("- stack overflowed: {}", stack_overflow);
+    println!();
+}
+
+fn print_value(value: &runtime::value::Value) {
+    match value {
         runtime::value::Value::Data(data) => {
             print!("{}", data.type_ctor);
-            for param in data.args {
+            for param in &data.args {
                 print!(" (");
-                print_evaluated(module_loader, param);
+                print_value(&param.0.borrow());
                 print!(")");
             }
         }

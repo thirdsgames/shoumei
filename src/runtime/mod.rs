@@ -34,20 +34,59 @@ enum MatchError<'ml> {
     },
 }
 
+/// Profiling information for an evaluation of an expression.
+pub struct EvaluationProfile<'ml> {
+    /// The actual value that was found.
+    pub value: Value<'ml>,
+    /// The maximum stack depth that was reached while computing a chain of thunks.
+    /// This can be used to aid in optimising tail-recursive functions.
+    pub max_stack_depth: usize,
+    /// The maximum depth of data nesting in the result expression.
+    pub max_result_depth: usize,
+    /// Whether a stack overflow was detected. If this is true, the value may not be
+    /// completely strictly evaluated.
+    pub stack_overflow: bool,
+}
+
 impl<'ml> Runtime<'ml> {
     /// Creates a new runtime and evaluates the given value.
-    pub fn evaluate(module_loader: &'ml ModuleLoader, root_thunk: ValueRef<'ml>) -> Value<'ml> {
+    /// The result value is returned, along with profiling information about this evaluation.
+    /// The result is evaluated strictly, but intermediate operations may be lazy.
+    pub fn evaluate(
+        module_loader: &'ml ModuleLoader,
+        root_thunk: ValueRef<'ml>,
+    ) -> EvaluationProfile<'ml> {
+        Runtime::evaluate_inner(module_loader, root_thunk, 0)
+    }
+
+    /// The `recursion_depth` is the level of nesting that the result of the computation has.
+    /// For example, the value `Just (Just (Just 1))` has a maximum recursion depth of 4.
+    /// We can use this to detect and prevent stack overflows, and detect infinitely recursive data.
+    fn evaluate_inner(
+        module_loader: &'ml ModuleLoader,
+        root_thunk: ValueRef<'ml>,
+        recursion_depth: usize,
+    ) -> EvaluationProfile<'ml> {
+        const MAX_RECURSION_DEPTH: usize = 1000;
+
         let mut runtime = Self {
             module_loader,
             thunk_stack: Vec::new(),
         };
         runtime.thunk_stack.push(root_thunk.clone());
 
+        let mut max_stack_depth = 1;
+
+        // If the root thunk is an `Apply` or a `Let`, we should evaluate it in this main loop.
+        // But if it isn't, we can just skip the first iteration of the loop and then
+        // it'll return the value.
+        let should_evaluate = matches!(&*root_thunk.0.borrow(), Value::Apply(_) | Value::Let(_));
+
         // Keep evaluating thunks on the stack until the thunk is fully evaluated.
         loop {
             // Evaluate the topmost thunk on the stack.
-            let topmost_thunk = runtime.thunk_stack.last().unwrap().clone();
-            {
+            if should_evaluate {
+                let topmost_thunk = runtime.thunk_stack.last().unwrap().clone();
                 let mut topmost_thunk_borrow = topmost_thunk.0.borrow_mut();
                 match &mut *topmost_thunk_borrow {
                     Value::Apply(apply) => {
@@ -68,6 +107,9 @@ impl<'ml> Runtime<'ml> {
                 };
             }
 
+            // Update profiling information.
+            max_stack_depth = max_stack_depth.max(runtime.thunk_stack.len());
+
             // Check to see if the root thunk has been evaluated.
             match &*root_thunk.0.borrow() {
                 Value::Apply(_) | Value::Let(_) => {
@@ -77,7 +119,42 @@ impl<'ml> Runtime<'ml> {
                 val => {
                     // We've evaluated the computation!
                     // We can return this as a result.
-                    return val.clone();
+                    // But wait - if it's a data type, we first need to make sure that its arguments are evaluated.
+                    let mut max_result_depth = recursion_depth;
+
+                    if let Value::Data(data) = val {
+                        // We should check to make sure that recursive
+                        // evaluation of data arguments doesn't stack overflow.
+                        if recursion_depth > MAX_RECURSION_DEPTH {
+                            return EvaluationProfile {
+                                value: val.clone(),
+                                max_stack_depth,
+                                max_result_depth: recursion_depth,
+                                stack_overflow: true,
+                            };
+                        }
+
+                        // We need to merge the inner evaluation profiles with this one.
+                        let mut max_inner_stack_depth = 0;
+                        let mut max_inner_result_depth = 0;
+                        for arg in &data.args {
+                            let inner_evaluation_profile =
+                                Runtime::evaluate(module_loader, arg.clone());
+                            max_inner_stack_depth =
+                                max_inner_stack_depth.max(inner_evaluation_profile.max_stack_depth);
+                            max_inner_result_depth = max_inner_result_depth
+                                .max(inner_evaluation_profile.max_result_depth);
+                        }
+                        max_stack_depth += max_inner_stack_depth;
+                        max_result_depth += max_inner_result_depth;
+                    }
+
+                    return EvaluationProfile {
+                        value: val.clone(),
+                        max_stack_depth,
+                        max_result_depth,
+                        stack_overflow: false,
+                    };
                 }
             }
         }
