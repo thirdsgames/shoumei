@@ -136,17 +136,18 @@ impl<'ml> Runtime<'ml> {
 
                         // We need to merge the inner evaluation profiles with this one.
                         let mut max_inner_stack_depth = 0;
-                        let mut max_inner_result_depth = 0;
                         for arg in &data.args {
-                            let inner_evaluation_profile =
-                                Runtime::evaluate(module_loader, arg.clone());
+                            let inner_evaluation_profile = Runtime::evaluate_inner(
+                                module_loader,
+                                arg.clone(),
+                                recursion_depth + 1,
+                            );
                             max_inner_stack_depth =
                                 max_inner_stack_depth.max(inner_evaluation_profile.max_stack_depth);
-                            max_inner_result_depth = max_inner_result_depth
-                                .max(inner_evaluation_profile.max_result_depth);
+                            max_result_depth =
+                                max_result_depth.max(inner_evaluation_profile.max_result_depth);
                         }
                         max_stack_depth += max_inner_stack_depth;
-                        max_result_depth += max_inner_result_depth;
                     }
 
                     return EvaluationProfile {
